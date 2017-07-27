@@ -7,10 +7,8 @@ import sqlite3
 
 class dbOutput(iOutputs):
 
-    def __init__(self, file_path=None, connection_string = None):
-        if connection_string:
-            self.connect_to_db(connection_string)
-        self.added_objs= {}
+    def __init__(self):
+        self.added_objs = {}
 
     def connect_to_db(self, connection_string):
         self.session_factory_out = dbconnection.createConnectionFromString(connection_string)
@@ -54,16 +52,18 @@ class dbOutput(iOutputs):
         self.check("variables", self.data)
         # proc level
         self.check("processinglevels", self.data)
-        # action
-        self.check("actions", self.data)
-        # featureaction
-        self.check("featureactions", self.data)
+        # # action
+        # self.check("actions", self.data)
+        # # featureaction
+        # self.check("featureactions", self.data)
+        # # result
+        # self.check("results", self.data)
+        self.check_results(self.data)
+
         # actionby
         self.check("actionby", self.data)
         # relatedActions
         self.check("relatedactions", self.data)
-        # result
-        self.check("results", self.data)
         # datasetresults
         self.check("datasetsresults", self.data)
         # measurementResultValues
@@ -71,6 +71,7 @@ class dbOutput(iOutputs):
         # MeasurementResultValueAnnotations
         self.check("measurementresultvalueannotations", self.data)
         # timeseriesresultvalues - ColumnDefinitions:, data:
+        self._session_out.commit()
         val = "timeseriesresultvalues"
         if val in self.data:
             self.save_ts(self.data[val])
@@ -78,54 +79,68 @@ class dbOutput(iOutputs):
         self._session_out.commit()
 
     def save_ts(self, values):
-        pass
+        """
+
+        :param values: pandas dataframe
+        :return:
+        """
+
+        #TODO change ResultID
+        from odm2api.ODM2.models import TimeSeriesResultValues
+        tablename = TimeSeriesResultValues.__tablename__
+        values.to_sql(name=tablename,
+                      schema=TimeSeriesResultValues.__table_args__['schema'],
+                      if_exists='append',
+                      chunksize=1000,
+                      con=self._engine_out,
+                      index=False)
+
 
     def check(self, objname, data):
-
         if objname in data:
-            vals = self.add_to_db(data[objname])
-            # self.added_objs[objname] = vals
-
-    def add_to_db(self,  values):
-        # added = []
-
-        for obj in values:
-            try:
-                _changeSchema(None)
-                self.fill_dict(obj)
-                valuedict = obj.__dict__.copy()
-                valuedict = self.get_new_objects(obj, valuedict)
-                valuedict.pop("_sa_instance_state")
-
-                #delete primary key
-                for v in valuedict.keys():
-                    if v.lower() == obj.__mapper__.primary_key[0].name:
-                        del valuedict[v]
-                    elif "obj" in v.lower():
-                        del valuedict[v]
-
-                model = type(obj)
-                new_obj = self.get_or_create(self._session_out, model, **valuedict)
-
-                ## save the new Primary key to the dictionary
-
-                # find the primary key
-                for k in new_obj.__dict__.keys():
-                    if k.lower() == new_obj.__mapper__.primary_key[0].name:
-                        new_pk = new_obj.__dict__[k]
-                        # pk = k
-                        break
-                # new_pk = getattr(new_obj, pk)
-
-                # save pk to dictionary
-                self.added_objs[obj] = new_pk
+            for value in data[objname]:
+                self.add_to_db(value)
 
 
-            except Exception as e:
-                # print e
-                self._session_out.rollback()
-                # raise e
-        # return added
+
+    def add_to_db(self,  obj):
+        try:
+            _changeSchema(None)
+            self.fill_dict(obj)
+            valuedict = obj.__dict__.copy()
+            valuedict = self.get_new_objects(obj, valuedict)
+            valuedict.pop("_sa_instance_state")
+
+            #delete primary key
+            for v in valuedict.keys():
+                if v.lower() == obj.__mapper__.primary_key[0].name:
+                    del valuedict[v]
+                elif "obj" in v.lower():
+                    del valuedict[v]
+
+            model = type(obj)
+            #add new object to the session
+            new_obj = self.get_or_create(self._session_out, model, **valuedict)
+
+            ## save the new Primary key to the dictionary
+
+            # find the primary key
+            for k in new_obj.__dict__.keys():
+                if k.lower() == new_obj.__mapper__.primary_key[0].name:
+                    new_pk = new_obj.__dict__[k]
+                    # pk = k
+                    break
+            # new_pk = getattr(new_obj, pk)
+
+            # save pk to dictionary
+            self.added_objs[obj] = new_pk
+
+
+        except Exception as e:
+            print e
+            self._session_out.rollback()
+            # raise e
+
 
 
     def fill_dict(self, obj):
@@ -158,46 +173,6 @@ class dbOutput(iOutputs):
                     self._session_out.rollback()
         return valuedict
 
-    # def get_new_objects(self, obj, valuedict):
-    #     for key in dir(obj):
-    #         if "obj" in key.lower():  # key.contains("Obj"):
-    #             try:
-    #                 _changeSchema(None)
-    #                 att = getattr(obj, key)
-    #                 if att is not None:
-    #                     self.fill_dict(obj)
-    #                     attdict = att.__dict__.copy()
-    #                     for k in attdict.keys():
-    #                         if k.lower() == att.__mapper__.primary_key[0].name:
-    #
-    #                             del attdict[k]
-    #                         elif "obj" in k.lower():
-    #                             del attdict[k]
-    #                     attdict.pop("_sa_instance_state")
-    #                     attdict = self.get_new_objects(att, attdict)
-    #
-    #                     # model = self.check_model(attr =att)
-    #                     model= type(att)
-    #                     # new_obj = self._session_out.query(model).filter_by(**attdict).first()
-    #                     new_obj = self.get_or_create(self._session_out, model, **attdict)
-    #
-    #                     objkey = key.replace("Obj", "ID")
-    #                     if objkey == "RelatedFeatureID":
-    #                         newkey = "SamplingFeatureID"
-    #                     elif objkey == "RelatedActionID":
-    #                         newkey = "ActionID"
-    #                     elif "units" in objkey.lower():
-    #                         newkey = "UnitsID"
-    #                     elif "resultvalue" in objkey.lower():
-    #                         newkey = "ValueID"
-    #                     else:
-    #                         newkey = objkey
-    #                     valuedict[objkey] = getattr(new_obj, newkey)
-    #
-    #             except Exception as e:
-    #                 # print ("cannot find {} in {}. Error:{} in dbOutput".format(key, obj.__class__.__name__, e))
-    #                 self._session_out.rollback()
-    #     return valuedict
 
     def get_inherited(self, sess, model, **kwargs):
         uuid = {}
@@ -226,4 +201,42 @@ class dbOutput(iOutputs):
             new_instance = sess.merge(instance)
             sess.flush()
             return new_instance
+
+
+
+
+    def check_results(self, data):
+
+        for obj in data["results"]:
+
+            uuid = {}
+            uuid["ResultUUID"] = str(obj.ResultUUID)
+            instance = self._session_out.query(Results).filter_by(**uuid).first()
+            if instance:
+                self.added_objs[obj] = instance.ResultID
+                self.added_objs[obj.FeatureActionObj.ActionObj] = instance.FeatureActionObj.ActionID
+                self.added_objs[obj.FeatureActionObj] = instance.FeatureActionID
+
+            else:
+                self.add_to_db(obj.FeatureActionObj.ActionObj)
+                self.add_to_db(obj.FeatureActionObj)
+                self.add_to_db(obj)
+
+        self._session_out.commit()
+
+
+
+
+        # if False:
+        # # if result uuid exists then use the existing action associated with it (result.featureactionobj.actionobj,
+        # #  and change the end date time
+        #     pass
+        # else:
+        # # else create objects as they exist in memory
+        #     # action
+        #     self.check("actions", self.data)
+        #     # featureaction
+        #     self.check("featureactions", self.data)
+        #     # result
+        #     self.check("results", self.data)
 

@@ -2,6 +2,8 @@ argparse
 typecheck
 valideer
 
+xlrd
+
 pyodbc
 pymysql
 numpy

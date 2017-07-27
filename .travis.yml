@@ -70,9 +70,9 @@ install: # now just our code
   - source activate test-environment
   - pip install -r requirements/development.pip
   # ODM2
-  - pip install odm2api
+#  - pip install odm2api
+  - pip install --process-dependency-links git+https://github.com/ODM2/ODM2PythonAPI.git
 #  - pip install  -r requirements_tests.txt  --allow-external pyodbc --allow-unverified pyodbc
-    # pysqlite
   - pip install pysqlite
   - pip list
 

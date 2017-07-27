@@ -7,3 +7,4 @@ wxpython
 pyyaml
 openpyxl
 pandas
+xlrd

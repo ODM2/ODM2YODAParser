@@ -23,6 +23,7 @@ class ExcelSpecimen():
         self.sheets = []
         self.name_ranges = None
         self.tables = {}
+        self._init_data(input_file)
 
     def get_table_name_ranges(self):
         """
@@ -46,6 +47,10 @@ class ExcelSpecimen():
 
         return table_name_range
 
+    def _init_data(self, file_path):
+        self.workbook = openpyxl.load_workbook(file_path, read_only=True)
+        self.name_ranges = self.workbook.get_named_ranges()
+        self.sheets = self.workbook.get_sheet_names()
 
     def count_number_of_rows_to_parse(self, dimensions):
         # http://stackoverflow.com/questions/1450897/python-removing-characters-except-digits-from-string
@@ -57,25 +62,38 @@ class ExcelSpecimen():
         self.total_rows_to_read += (bottom - top)
 
 
-    # def parse(self, file_path=None):
-    def parse(self, session):
+    def get_range_address(self, named_range):
+        if named_range is not None:
+            return named_range.attr_text.split('!')[1].replace('$', '')
+        return None
+
+    def get_range_value(self, range_name, sheet):
+        value = None
+        named_range = self.workbook.get_named_range(range_name)
+        range = self.get_range_address(named_range)
+        if range:
+            value = sheet[range].value
+        return value
+
+
+    def parse(self, session_factory):
         """
         If any of the methods return early, then check that they have the table ranges
         The table range should exist in the tables from get_table_name_range()
         :param :
         :return:
         """
-        self._session = session
 
-        if not self.verify(self.input_file):
-            print "Something is wrong with the file but what?"
-            return False
+        self._session = session_factory.getSession()
+        self._engine = session_factory.engine
 
         self.tables = self.get_table_name_ranges()
 
         start = time.time()
 
+
         self.parse_affiliations()
+        self.parse_datasets()
         self.parse_methods()
         self.parse_variables()
         self.parse_units()
@@ -101,6 +119,23 @@ class ExcelSpecimen():
         value = float(self.rows_read) / self.total_rows_to_read * 100.0
         self.gauge.SetValue(value)
 
+    def parse_datasets(self):
+
+        CONST_DATASET = 'Dataset Citation'
+
+        sheet, tables = self.get_sheet_and_table(CONST_DATASET)
+
+        dataset = DataSets()
+        dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
+        dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
+        dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
+        dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
+        dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
+        self._session.add(dataset)
+        self._session.flush()
+        self.data_set = dataset
+
+
     def parse_analysis_results(self):
         SHEET_NAME = "Analysis_Results"
         sheet, tables = self.get_sheet_and_table(SHEET_NAME)
@@ -110,7 +145,7 @@ class ExcelSpecimen():
             return
 
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
             for row in cells:
 
                 action = Actions()
@@ -119,6 +154,7 @@ class ExcelSpecimen():
                 measure_result = MeasurementResults()
                 measure_result_value = MeasurementResultValues()
                 related_action = RelatedActions()
+                dataset_result = DataSetsResults()
 
                 # Action
                 method = self._session.query(Methods).filter_by(MethodCode=row[7].value).first()
@@ -178,6 +214,15 @@ class ExcelSpecimen():
                 measure_result.SampledMediumCV = row[12].value
                 measure_result.ValueCount = 1
                 measure_result.ResultDateTime = collectionAction.ActionObj.BeginDateTime
+                self._session.add(measure_result)
+                self._session.flush()
+
+
+                #DataSet Results
+                if self.data_set is not None:
+                    dataset_result.DataSetObj = self.data_set
+                    dataset_result.ResultObj = measure_result
+                    self._session.add(dataset_result)
 
                 # Measurements Result Value
                 measure_result_value.DataValue = row[3].value
@@ -185,7 +230,10 @@ class ExcelSpecimen():
                 measure_result_value.ValueDateTimeUTCOffset = collectionAction.ActionObj.BeginDateTimeUTCOffset
                 measure_result_value.ResultObj = measure_result
 
-                self._session.add(measure_result)
+
+
+
+
                 self._session.add(measure_result_value)
                 self._session.flush()
 
@@ -205,7 +253,7 @@ class ExcelSpecimen():
 
         units = []
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
 
             for row in cells:
                 unit = Units()
@@ -233,7 +281,7 @@ class ExcelSpecimen():
         def parse_organizations(org_table, session):
             organizations = {}
 
-            cells = sheet[org_table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(org_table)]
             for row in cells:
                 org = Organizations()
                 org.OrganizationTypeCV = row[0].value
@@ -249,15 +297,16 @@ class ExcelSpecimen():
 
         def parse_authors(author_table):
             authors = []
-            cells = sheet[author_table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(author_table)]
+            #TODO check if required people have value
             for row in cells:
                 ppl = People()
                 org = Organizations()
                 aff = Affiliations()
 
-                ppl.PersonFirstName = row[0].value
-                ppl.PersonMiddleName = row[1].value
-                ppl.PersonLastName = row[2].value
+                ppl.PersonFirstName = row[0].value.strip() if row[0].value else ""
+                ppl.PersonMiddleName = row[1].value.strip() if row[1].value else ""
+                ppl.PersonLastName = row[2].value.strip() if row[2].value else ""
 
                 org.OrganizationName = row[3].value
                 aff.AffiliationStartDate = row[5].value
@@ -278,7 +327,7 @@ class ExcelSpecimen():
         orgs = {}
         affiliations = []
         for table in tables:
-            if 'Authors_Table' == table.name:
+            if 'People_Table' == table.name:
                 affiliations = parse_authors(table)
             else:
                 orgs = parse_organizations(table, self._session)
@@ -293,10 +342,15 @@ class ExcelSpecimen():
         self._session.flush()
 
     def get_sheet_and_table(self, sheet_name):
-        if sheet_name not in self.tables:
-            return [], []
+        # if sheet_name not in self.tables:
+        #     return [], []
+        # sheet = self.workbook.get_sheet_by_name(sheet_name)
+        # tables = self.tables[sheet_name]
         sheet = self.workbook.get_sheet_by_name(sheet_name)
-        tables = self.tables[sheet_name]
+        if sheet_name not in self.tables:
+            tables = []
+        else:
+            tables = self.tables[sheet_name]
 
         return sheet, tables
 
@@ -310,7 +364,7 @@ class ExcelSpecimen():
 
         processing_levels = []
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
 
             for row in cells:
                 proc_lvl = ProcessingLevels()
@@ -338,24 +392,30 @@ class ExcelSpecimen():
         sheet = self.workbook.get_sheet_by_name(SHEET_NAME)
         tables = self.tables[SHEET_NAME]
 
-        sites_table = tables[0] if tables[0].name == 'Sites_Table' else tables[1]
-        spatial_ref_table = tables[0] if tables[0].name == 'SitesDatumCV_Table' else tables[1]
+        sites_table = tables[0] if tables[0].name == 'Sites_Table' else None
+        elevation_datum_range = self.workbook.get_named_range("ElevationDatum")
+        spatial_ref_name_range = self.workbook.get_named_range("LatLonDatum")
 
-        def parse_sites_datum_cv(sheet, spatial_reference_table):
-            result = {}
-            cells = sheet[spatial_reference_table.attr_text.split('!')[1].replace('$', '')]
-            result['elevation_datum_cv'] = cells[0][1].value
-            result['latlon_datum_cv'] = cells[1][1].value
-            return result
+        # spatial_ref_table = tables[0] if tables[0].name == 'SitesDatumCV_Table' else tables[1]
 
-        sites_datum = parse_sites_datum_cv(sheet, spatial_ref_table)
+        # def parse_sites_datum_cv(sheet, spatial_reference_table):
+        #     result = {}
+        #     cells = sheet[spatial_reference_table.attr_text.split('!')[1].replace('$', '')]
+        #     result['elevation_datum_cv'] = cells[0][1].value
+        #     result['latlon_datum_cv'] = cells[1][1].value
+        #     return result
+
+        # sites_datum = parse_sites_datum_cv(sheet, spatial_ref_table)
         spatial_references = self.parse_spatial_reference()
 
         sites = []
-        cells = sheet[sites_table.attr_text.split('!')[1].replace('$', '')]
+        cells = sheet[self.get_range_address(sites_table)]
 
-        elevation_datum = sites_datum['elevation_datum_cv']
-        spatial_ref_name = sites_datum['latlon_datum_cv']
+
+        elevation_datum = sheet[self.get_range_address(elevation_datum_range)].value
+        # elevation_datum = sites_datum['elevation_datum_cv']
+        spatial_ref_name = sheet[self.get_range_address(spatial_ref_name_range)].value.encode('utf-8')
+        # spatial_ref_name = sites_datum['latlon_datum_cv']
         spatial_references_obj = spatial_references[spatial_ref_name]
 
         for row in cells:
@@ -389,7 +449,7 @@ class ExcelSpecimen():
 
         spatial_references = {}
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
             for row in cells:
                 sr = SpatialReferences()
                 sr.SRSCode = row[0].value
@@ -410,7 +470,7 @@ class ExcelSpecimen():
             return []
 
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
 
             for row in cells:
                 specimen = Specimens()
@@ -464,7 +524,7 @@ class ExcelSpecimen():
             return []
 
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
 
             for row in cells:
                 method = Methods()
@@ -497,7 +557,7 @@ class ExcelSpecimen():
         tables = self.tables[CONST_VARIABLES]
 
         for table in tables:
-            cells = sheet[table.attr_text.split('!')[1].replace('$', '')]
+            cells = sheet[self.get_range_address(table)]
             for row in cells:
                 var = Variables()
                 var.VariableTypeCV = row[0].value
@@ -507,7 +567,12 @@ class ExcelSpecimen():
                 var.SpeciationCV = row[4].value
 
                 if row[5].value is not None:
-                    var.NoDataValue = None if row[5].value == 'NULL' else row[5].value
+                    if row[5].value == 'NULL':
+                        #TODO break somehow because not all required data is not filled out
+                        print "All Variables must contain a valid No Data Value!"
+                        var.NoDataValue = None
+                    else:
+                        var.NoDataValue = row[5].value
 
                 if var.NoDataValue is not None:  # NoDataValue cannot be None
                     self._session.add(var)
@@ -516,18 +581,5 @@ class ExcelSpecimen():
 
         self._session.flush()
 
-    def verify(self, file_path=None):
 
-        if file_path is not None:
-            self.input_file = file_path
-
-        if not os.path.isfile(self.input_file):
-            print "File does not exist"
-            return False
-
-        self.workbook = openpyxl.load_workbook(self.input_file, read_only=True)
-        self.name_ranges = self.workbook.get_named_ranges()
-        self.sheets = self.workbook.get_sheet_names()
-
-        return True
 

@@ -12,6 +12,13 @@ except ImportError:
     from sqlalchemy.exceptions import IntegrityError
 from functools import partial
 
+
+# from yodatools.timeseries import convertTimeSeries
+import pandas as pd
+# removes the warning message for pandas chained_assignment
+pd.options.mode.chained_assignment = None
+
+
 log = logging.Logger('bootalchemy', level=logging.INFO)
 ch = logging.StreamHandler()
 ch.setLevel(logging.DEBUG)
@@ -72,7 +79,7 @@ class Loader(object):
         if references is None:
             self._references = {}
         else:
-            self._references = references
+            self. _references = references
 
         if not isinstance(model, list):
             model = [model]
@@ -299,10 +306,6 @@ class Loader(object):
 
         for key, value in resolved_values.iteritems():
 
-            # if "ID" in key and "UUID" not in key:
-            # if key == 'SamplingFeatureObj':
-            #     key = 'SamplingFeatureID'
-            #     value = self.obtain_object_id(key, value)
             if value and isinstance(value, basestring) and value.startswith('*'):
                 value = self.obtain_object_id(key, value)
                 # key, value = self.obtain_key_value(key, value, resolved_values)
@@ -336,16 +339,6 @@ class Loader(object):
         return obj
 
 
-
-    def try_parsing_date(self, text):
-        for fmt in ('%Y-%m-%d %H:%M:%S', '%Y-%m-%d %H:%M', '%Y-%m-%d'):
-            try:
-                return datetime.strptime(text, fmt)
-            except ValueError:
-                pass
-        raise ValueError('no valid date format found')
-
-
     def obtain_object_id(self, key, value):
         self.session.flush()
         ref = None
@@ -368,147 +361,81 @@ class Loader(object):
             return value
 
 
-    def resolve_references(self, session, values):
-        """
 
-        :param values:
-        :return:
-        """
+    def parse_meta(self, meta):
 
-        dictOfValues = {}
+        col_dict= {}
+        for col in meta:
+            if "ValueDateTime" not in col["Label"]:
+                # print col["Label"]
+                value_list = {}
 
-        self.session = session
+                # dfUnstacked["Label" == col["ODM2Field"]]= col
 
-        """
-        Find the ID for each of the anchors/aliases without adding
-        it to a session but pulling references from available session
-        """
-        dictOfValues = {}
+                for key, value in col.iteritems():
+                    if key not in ["ColumnNumber", "ODM2Field"]:
+                        value_list[key]= self.resolve_value(value)
 
-        columnValues = None
-        if isinstance(values, dict) and "ColumnDefinitions" in values:
-            columnValues = values.pop('ColumnDefinitions')
+                col_dict[col["Label"]] = value_list
+
+        return col_dict
 
 
-            for i in columnValues:
-                values = []
-                # print "I: ", i
-                for k, v in i.iteritems():
-                    newValue = self.resolve_value(v)
-                    if "Result" in k:#k == "ResultID":
-                        newValue = newValue.ResultID
-                    elif "TimeAggregationIntervalUnits" in k: #k == "TimeAggregationIntervalUnitsID":
-                        newValue = newValue.UnitsID
-
-                    values.append(newValue)
-                    # print "K: ", k, " Value: ", newValue
-                dictOfValues[i['Label']] = values
-                print
-
-        return dictOfValues
-
-    def obtain_time_series(self, timeSeries):
-        """
-        Clean up time series data to be put into a pandas dataframe
-        """
-
-        data = self.resolve_references(self.session, timeSeries)
-
-        try:
-            data.pop('ValueDateTime')
-            data.pop('ValueDateTimeUTCOffset')
-        except:
-            pass
-
-        # convert dictionary of data into a list of data with the first element removed
-        tmp_list = []
-        for k, v in data.iteritems():
-            v.pop(0)
-            tmp_list.append(v)
-        data = tmp_list
-        tmp_list = None
-
-        return data
-
-    def loadTimeSeriesResults(self, session, engine, timeSeries):
+    def loadTimeSeriesResults(self, timeSeries,  session, engine):
         """
         Loads TimeSeriesResultsValues into pandas DataFrame
         """
-        self.session = session
-        self.engine = engine
+
         try:
-            data_values = timeSeries.pop('Data')
-        except:
+            column_labels = timeSeries["Data"][0][0]
+            # data_values = timeSeries["Data"][0][1:]
+            meta = timeSeries['ColumnDefinitions']
+            date_column = meta[0]["Label"]
+            utc_column = meta[1]["Label"]
+            cross_tab = pd.DataFrame(timeSeries["Data"][0][1:], columns=column_labels)  #, index=date_column)
+
+        except Exception as ex:
             return
-        data = self.obtain_time_series(timeSeries)
 
-        import pandas as pd
-        # removes the warning message for pandas chained_assignment
-        pd.options.mode.chained_assignment = None
+        cross_tab.set_index([date_column, utc_column], inplace=True)
 
-        column_labels = data_values[0][0]
-        data_values = data_values[0][1:]
-        df = pd.DataFrame(data_values, columns=column_labels)
-        df.set_index(['ValueDateTime', 'ValueDateTimeUTCOffset'], inplace=True)
-        dfUnstacked = df.unstack(level=['ValueDateTime', 'ValueDateTimeUTCOffset'])
+        serial = cross_tab.unstack(level=[date_column, utc_column])
+        meta_dict = self.parse_meta(meta=meta)
 
-        df2 = pd.DataFrame(data, columns=['Label',  'ODM2Field', 'ResultID', 'CensorCodeCV', 'QualityCodeCV', 'TimeAggregationInterval',
-                                          'TimeAggregationIntervalUnitsID'])
-        dfUnstacked = dfUnstacked.reset_index()
-        df3 = pd.merge(df2, dfUnstacked, left_on="Label", right_on="level_0")
+        serial = serial.append(pd.DataFrame(columns=['ResultID', 'CensorCodeCV', 'QualityCodeCV', 'TimeAggregationInterval',
+                                            'TimeAggregationIntervalUnitsID']))\
+                                            .fillna(0)\
+                                            .reset_index()\
+                                            .rename(columns={0: 'DataValue'})\
+                                            .dropna()
 
-        # Remove unnecessary column
-        colval= df3['ODM2Field'][0]
-        del df3['ODM2Field']
-        del df3['level_0']
+        # print serial.columns
 
-        # print df3
+        for k, v in meta_dict.iteritems():
+            serial.ix[serial.level_0 == k, 'ResultID'] = v["Result"].ResultID
+            serial.ix[serial.level_0 == k, 'CensorCodeCV'] = v["CensorCodeCV"]
+            serial.ix[serial.level_0 == k, 'QualityCodeCV'] = v["QualityCodeCV"]
+            serial.ix[serial.level_0 == k, 'TimeAggregationInterval'] = v["TimeAggregationInterval"]
+            serial.ix[serial.level_0 == k, 'TimeAggregationIntervalUnitsID'] = v["TimeAggregationIntervalUnitsObj"].UnitsID
 
-        # Construct the sql queries
-        AVGDataFrame = df3[df3['Label'] == 'AirTemp_Avg']
-        MaxDataFrame = df3[df3['Label'] == 'AirTemp_Max']
-        MinDataFrame = df3[df3['Label'] == 'AirTemp_Min']
+        del serial['level_0']
 
-        # Remove unnecessary column
-        del AVGDataFrame['Label']
-        del MaxDataFrame['Label']
-        del MinDataFrame['Label']
-        del df3
-        del dfUnstacked
-        del df2
-        del df
+        # TODO does this fail for sqlite in memory
+        # session.commit()
+        # session.close()
 
-        # set column names for the last element
-        AVGDataFrame.columns.values[-1] = colval
-        MinDataFrame.columns.values[-1] = colval
-        MaxDataFrame.columns.values[-1] = colval
+        from odm2api.ODM2.models import TimeSeriesResultValues
+        tablename = TimeSeriesResultValues.__tablename__
+        serial.to_sql(name=tablename,
+                         schema=TimeSeriesResultValues.__table_args__['schema'],
+                         if_exists='append',
+                         chunksize=1000,
+                         con=engine,
+                         index=False)
+        # session.commit()
+        # todo add timeseriesresult values objects, should be done with result object
+        return serial
 
-        # add missing values
-        # AVGDataFrame['QualityCodeCV'] = 'Unknown'
-        # MinDataFrame['QualityCodeCV'] = 'Unknown'
-        # MaxDataFrame['QualityCodeCV'] = 'Unknown'
-
-        klass = self.get_klass("TimeSeriesResultValues")
-
-        AVGValues = AVGDataFrame.to_dict('records')
-        MinValues = MinDataFrame.to_dict('records')
-        MaxValues = MaxDataFrame.to_dict('records')
-
-        merged_dicts = self.merge_dicts(AVGValues, MinValues, MaxValues)
-        AVGValues = None
-        MinValues = None
-        MaxValues = None
-
-        self.session.flush()
-        for value in merged_dicts:
-            resolved_values = self._check_types(klass, value)
-            obj = self.create_obj(klass, resolved_values)
-            try:
-                self.session.add(obj)
-                self.session.flush()
-            except  Exception as e :
-                print "error adding obj: %s. %s" % (obj, e)
-                self.session.rollback()
 
     def add_klasses(self, klass, items):
         """
@@ -593,14 +520,9 @@ class Loader(object):
         skip_keys = ['flush', 'commit', 'clear']
         try:
             for group in data:
-                # print "Group: ", group
                 for name, items in group.iteritems():
                     if name not in skip_keys:
-                        # print "Name: ", name
-                        # print "Items: ", items
-
                         klass = self.get_klass(name)
-                        # print klass, '\n'
                         self.add_klasses(klass, items)
 
                 # session.flush()
@@ -631,6 +553,7 @@ class Loader(object):
         #    raise
 
         self.session = None
+        return self._references
 
     def log_error(self, e, data, klass, item):
         log.error('error occured while loading yaml data with output:\n%s'%pformat(data))

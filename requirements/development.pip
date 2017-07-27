@@ -4,6 +4,7 @@ pytest-cov
 mock
 openpyxl
 pyyaml
+xlrd
 
 #db support
 pymysql

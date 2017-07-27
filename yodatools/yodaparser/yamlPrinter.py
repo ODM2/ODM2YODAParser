@@ -121,15 +121,89 @@ class YamlPrinter():
 
         if objname in data:
             # check to see if this is an inherited object
-            if data[objname][0].__class__ != data[objname][0]._sa_instance_state.key[0]:
+            if data[objname][0].__class__ !=data[objname][0]._sa_instance_state.key[0]:
                 file.write(self.handle_inheritance(apiobjs=data[objname]))
             else:
                 file.write(self.print_objects(data[objname]))
 
-    def generate_ts_objects(self, data):
-        return data.to_csv()
+    def generate_ts_objects(self, serial):
+        text = 'TimeSeriesResultValues:\n'
+        text += '    ColumnDefinitions:\n'
+        text += '    - {ColumnNumber: 0001, Label: "ValueDateTime", ODM2Field: ValueDateTime}\n'
+        text += '    - {ColumnNumber: 0002, Label: "ValueDateTimeUTCOffset", ODM2Field: ValueDateTimeUTCOffset}\n'
+        ind = 3
+
+        meta = serial.groupby('resultid').min()
+        del meta["datavalue"]
+        del meta["valueid"]
+
+        cross_tab = self.generate_ts_data(serial)
+
+        for index, row in meta.iterrows():
+            varname, resultkey, taiuObj = ["", "", ""]
+            try:
+                unit = self.units_dict[row["timeaggregationintervalunitsid"]]
+                # get unit
+                taiuObj = self._references[unit]
+
+                result = self.result_dict[index]
+                # get result
+                resultkey = self._references[result]
+                # get varname
+                varname = result.VariableObj.VariableCode
+                # Change column names from ResultID to VariableCode, then VariableCode & SamplingFeatureCode, then
+                # VariableCode & SamplingFeatureCode &
+                cross_tab.rename(columns={index: varname}, inplace=True)
+                serial.ix[serial.resultid == index] = varname
+
+            except Exception as e:
+                print "I am an error" + e.message
+
+            text += '    - {{ColumnNumber: {:0>4d}, Label: "{}", ODM2Field: "DataValue", ' \
+                    'Result: {}, CensorCodeCV: "{}", QualityCodeCV: "{}", ' \
+                    'TimeAggregationInterval: {}, TimeAggregationIntervalUnitsObj: {}}}' \
+                    '\n'.format(ind, varname, resultkey, row["censorcodecv"], row["qualitycodecv"],
+                                row["timeaggregationinterval"], taiuObj)
+            ind += 1
+        text += "    Data:\n"
+        text += "    - [[\n"
+        text += cross_tab.to_csv(line_terminator='],[\n')
+        text += "]]\n"
+        return text
+
+
+    def generate_ts_data(self, serial):
+
+        # Timeseriesresultvalues - ColumnDefinitions:, Data:
+        cross_tab = serial.pivot_table(
+            index=["valuedatetime", "valuedatetimeutcoffset"],
+
+            columns="resultid",
+            values="datavalue")
+
+        # cross_tab = cross_tab.rename(columns={'valuedatetime': 'ValueDateTime', 'valuedatetimeutcoffset': 'ValueDateTimeUTCOffset'})
+        cross_tab.index.names = ['ValueDateTime', 'ValueDateTimeUTCOffset']
+
+
+        return cross_tab
+
+    def parse_meta(self, data):
+        self.result_dict = {}
+        for res in data["results"]:
+            self.result_dict[res.ResultID] = res
+
+        self.units_dict = {}
+        for unit in data["units"]:
+            self.units_dict[unit.UnitsID] = unit
+
+
+
+
+
+
 
     def print_yoda(self, out_file, data):
+        self.data = data
 
         if "measurementresultvalues" in data:
             filetype = "SpecimenTimeSeries"
@@ -137,69 +211,60 @@ class YamlPrinter():
             filetype = "TimeSeries"
 
         with open(out_file, 'w') as yaml_schema_file:
-            # print data.keys()
-            #header
-            yaml_schema_file.write(self.get_header(filetype))
-            #dataset
-            self.add_to_db("datasets", yaml_schema_file, data)
-            #organization
-            self.add_to_db("organizations", yaml_schema_file, data)
-            #people
-            self.add_to_db("people", yaml_schema_file, data)
-            #affiliations
-            self.add_to_db("affiliations", yaml_schema_file, data)
-            #citations
-            self.add_to_db("citations", yaml_schema_file, data)
-            #authorlists
-            self.add_to_db("authorlists", yaml_schema_file, data)
-            #datasetcitations
-            self.add_to_db("datasetcitations", yaml_schema_file, data)
-            #spatialreferences
-            self.add_to_db("spatialreferences", yaml_schema_file, data)
-            #samplingfeatures: Not explicitly printed, should be included in sites and specimen objects
-            #sites
-            # self.add_to_db("sites", yaml_schema_file, data)
-            #specimens
-            # self.add_to_db("specimens", yaml_schema_file, data)
 
+            # Header
+            yaml_schema_file.write(self.get_header(filetype))
+            # Data Set
+            self.add_to_db("datasets", yaml_schema_file, data)
+            # Organization
+            self.add_to_db("organizations", yaml_schema_file, data)
+            # People
+            self.add_to_db("people", yaml_schema_file, data)
+            # Affiliations
+            self.add_to_db("affiliations", yaml_schema_file, data)
+            # Citations
+            self.add_to_db("citations", yaml_schema_file, data)
+            # Author Lists
+            self.add_to_db("authorlists", yaml_schema_file, data)
+            # Data Set Citations
+            self.add_to_db("datasetcitations", yaml_schema_file, data)
+            # Spatial References
+            self.add_to_db("spatialreferences", yaml_schema_file, data)
+            # Sampling Features:
             self.add_to_db("samplingfeatures", yaml_schema_file, data)
-            #relatedfeatures
+            # Related Features
             self.add_to_db("relatedfeatures", yaml_schema_file, data)
-            #units
+            # Units
             self.add_to_db("units", yaml_schema_file, data)
-            #annotations
+            # Annotations
             self.add_to_db("annotations", yaml_schema_file, data)
-            #methods
+            # Methods
             self.add_to_db("methods", yaml_schema_file, data)
-            #variables
+            # Variables
             self.add_to_db("variables", yaml_schema_file, data)
-            #proc level
+            # Processing Level
             self.add_to_db("processinglevels", yaml_schema_file, data)
-            #action
+            # Action
             self.add_to_db("actions", yaml_schema_file, data)
-            #featureaction
+            # Feature Action
             self.add_to_db("featureactions", yaml_schema_file, data)
-            #actionby
+            # Action By
             self.add_to_db("actionby", yaml_schema_file, data)
-            #relatedActions
+            # Related Actions
             self.add_to_db("relatedactions", yaml_schema_file, data)
-            #result Not explicitly printed, should be included in measurement or timeseries results
+            # Result
             self.add_to_db("results", yaml_schema_file, data)
-            # #measurement results
-            # self.add_to_db("measurementresults", yaml_schema_file, data)
-            # #timeseriesresult
-            # self.add_to_db("timeseriesresults", yaml_schema_file, data)
-            #datasetresults
+            self.parse_meta(data)
+            # Data Set Results
             self.add_to_db("datasetsresults", yaml_schema_file, data)
-            # measurementResultValues
+            # Measurement Result Values
             self.add_to_db("measurementresultvalues", yaml_schema_file, data)
-            #timeseriesresultvalues - ColumnDefinitions:, Data:
+            # Measurement Result Value Annotations
+            self.add_to_db("measurementresultvalueannotations", yaml_schema_file, data)
+            # Time Series Result Values
             val = "timeseriesresultvalues"
             if val in data:
                 yaml_schema_file.write(self.generate_ts_objects(data[val]))
-            #MeasurementResultValueAnnotations
-            self.add_to_db("measurementresultvalueannotations", yaml_schema_file, data)
-
 
             yaml_schema_file.write("...")
 

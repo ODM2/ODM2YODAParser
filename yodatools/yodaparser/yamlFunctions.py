@@ -16,7 +16,6 @@ import pprint
 
 pp = pprint.PrettyPrinter(indent=8)
 
-
 class YamlFunctions(object):
     _mapping_tag = yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG
 
@@ -78,15 +77,17 @@ class YamlFunctions(object):
             print "Found TimeSeriesResults"
             timeSeries = s.pop('TimeSeriesResultValues')
 
-
-        yl.from_list(self._session, [s])
+        references = yl.from_list(self._session, [s])
 
         # load the Time Series Result information
-        # self._session.flush()
-        if timeSeries:
-            yl.loadTimeSeriesResults(self._session, self._engine, timeSeries)
-
         self._session.flush()
+
+        if timeSeries:
+            ts_values = yl.loadTimeSeriesResults(timeSeries,  self._session, self._engine)
+
+
+        # self._session.flush()
+        self._session.commit()
 
 
     def loadFromFiles(self, files):
