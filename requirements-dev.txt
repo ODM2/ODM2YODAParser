@@ -1,0 +1,12 @@
+# pyspatialite
+# pysqlite
+mysql-python
+openpyxl
+psycopg2
+pymssql
+pymysql
+pyodbc
+pytest
+pytest-cov
+pyyaml
+sqlalchemy
