@@ -1,10 +1,5 @@
-odm2api
-pyodbc
-pymysql
+# wxpython
 numpy
-sqlalchemy
-wxpython
-pyyaml
-openpyxl
+odm2api
 pandas
 xlrd

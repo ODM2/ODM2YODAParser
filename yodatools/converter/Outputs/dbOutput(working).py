@@ -21,128 +21,60 @@ class dbOutput(iOutputs):
         self.session_in = session
         self.data = self.parseObjects(session)
         self.connect_to_db(connection_string)
-
-        #units
+        
+        #datasets
+        self.check("datasets", self.data)
+        # organization
+        self.check("organizations", self.data)
+        # people
+        self.check("people", self.data)
+        # affiliations
+        self.check("affiliations", self.data)
+        # citations
+        self.check("citations", self.data)
+        # authorlists
+        self.check("authorlists", self.data)
+        # datasetcitations
+        self.check("datasetcitations", self.data)
+        # spatialreferences
+        self.check("spatialreferences", self.data)
+        # samplingfeatures: 
+        self.check("samplingfeatures", self.data)
+        # relatedfeatures
+        self.check("relatedfeatures", self.data)
+        # units
         self.check("units", self.data)
-
-        #add the rest of the metadata.
+        # annotations
+        self.check("annotations", self.data)
+        # methods
+        self.check("methods", self.data)
+        # variables
+        self.check("variables", self.data)
+        # proc level
+        self.check("processinglevels", self.data)
+        # # action
+        # self.check("actions", self.data)
+        # # featureaction
+        # self.check("featureactions", self.data)
+        # # result
+        # self.check("results", self.data)
         self.check_results(self.data)
 
+        # actionby
+        self.check("actionby", self.data)
+        # relatedActions
+        self.check("relatedactions", self.data)
+        # datasetresults
+        self.check("datasetsresults", self.data)
         # measurementResultValues
         self.check("measurementresultvalues", self.data)
-        # annotations
-        self.check("annotation", self.data)
         # MeasurementResultValueAnnotations
         self.check("measurementresultvalueannotations", self.data)
-
         # timeseriesresultvalues - ColumnDefinitions:, data:
         # self._session_out.commit()
         val = "timeseriesresultvalues"
         if val in self.data:
             self.save_ts(self.data[val])
-
-        self._session_out.commit()
-
-
-    def check_results(self, data):
-
-        for obj in data["results"]:
-
-            uuid = {}
-            uuid["ResultUUID"] = str(obj.ResultUUID)
-            instance = self._session_out.query(Results).filter_by(**uuid).first()
-            if instance:
-                # result
-                self.added_objs[obj] = instance.ResultID
-
-            else:
-                # select all from actionby where action id is the same
-                import odm2api.ODM2.models as model
-
-                FeatureAction = obj.FeatureActionObj
-                Action = FeatureAction.ActionObj
-                Method = Action.MethodObj
-                mOrganization = Method.OrganizationObj
-                SamplingFeatures = FeatureAction.SamplingFeatureObj
-                Variables = obj.VariableObj
-                ProcLevel = obj.ProcessingLevelObj
-
-
-                datasetResults = self.session_in.query(model.DataSetsResults).filter_by(ResultID = obj.ResultID).all()
-                Dataset = datasetResults[0].DataSetObj
-                # datasets
-                self.add_to_db(Dataset)
-                # organization
-                self.add_to_db(mOrganization)
-                dsCitations = self.session_in.query(model.DataSetCitations).filter_by(DataSetID = Dataset.DatasetID).all()
-
-
-                for dscit in dsCitations:
-
-                    Citation = dscit.CitationObj
-                    # citations
-                    self.add_to_db(Citation)
-                    # authorlists
-                    authorlist= self.session_in.query(model.AuthorLists).filter_by(CitationID=Citation.CitationID).all()
-                    for Author in authorlist:
-                        Person = Author.PersonObj
-                        self.add_to_db(Person)
-                        self.add_to_db(Author)
-
-                # datasetcitations
-                self.add_to_db(dsCitations)
-                # spatialreferences
-                self.add_to_db(SamplingFeatures.SpatialReferenceObj)
-                # samplingfeatures
-                self.add_to_db(SamplingFeatures)
-
-                # relatedfeatures
-                relatedfeatures = self.session_in.query(model.RelatedFeatures)\
-                    .filter_by(SamplingFeatureID=SamplingFeatures.SamplingFeatureID)\
-                    .filter_by(RelatedFeatureID=SamplingFeatures.SamplingFeatureID).all()
-                for rf in relatedfeatures:
-                    self.add_to_db(rf.SpatialReferenceObj)
-                    self.add_to_db(rf.RelatedFeatureObj)
-                    self.add_to_db(rf.SamplingFeatureObj)
-                    self.add_to_db(rf)
-
-                # methods
-                self.add_to_db(Method)
-                # variables
-                self.add_to_db(Variables)
-                # proc level
-                self.add_to_db(ProcLevel)
-                # action
-                self.add_to_db(Action)
-                # featureaction
-                self.add_to_db(FeatureAction)
-                # result
-                self.add_to_db(obj)
-
-                ActionBys = self.session_in.query(model.ActionBy).filter_by(ActionID=Action.ActionID).all()
-                for actionby in ActionBys:
-                    Affiliation = actionby.AffiliationObj
-                    People = Affiliation.PersonObj
-                    aOrganization = Affiliation.OrganizationObj
-                    self.add_to_db(People)
-                    self.add_to_db(aOrganization)
-                    self.add_to_db(Affiliation)
-                    # actionby
-                    self.add_to_db(actionby)
-
-                # relatedactions
-                relatedActions = self.session_in.query(model.RelatedActions) \
-                    .filter_by(ActionID=Action.ActionID) \
-                    .filter_by(RelatedActionID=Action.RelatedActionID).all()
-                for ra in relatedActions:
-                    self.add_to_db(ra.RelatedActionObj)
-                    self.add_to_db(ra.ActionObj)
-                    self.add_to_db(ra)
-
-
-                # datasetresults
-                for dr in datasetResults:
-                    self.add_to_db(dr)
 
         self._session_out.commit()
 
@@ -269,4 +201,42 @@ class dbOutput(iOutputs):
             new_instance = sess.merge(instance)
             sess.flush()
             return new_instance
+
+
+
+
+    def check_results(self, data):
+
+        for obj in data["results"]:
+
+            uuid = {}
+            uuid["ResultUUID"] = str(obj.ResultUUID)
+            instance = self._session_out.query(Results).filter_by(**uuid).first()
+            if instance:
+                self.added_objs[obj.FeatureActionObj] = instance.FeatureActionID
+                self.added_objs[obj.FeatureActionObj.ActionObj] = instance.FeatureActionObj.ActionID
+                self.added_objs[obj] = instance.ResultID
+
+            else:
+                self.add_to_db(obj.FeatureActionObj.ActionObj)
+                self.add_to_db(obj.FeatureActionObj)
+                self.add_to_db(obj)
+
+        self._session_out.commit()
+
+
+
+
+        # if False:
+        # # if result uuid exists then use the existing action associated with it (result.featureactionobj.actionobj,
+        # #  and change the end date time
+        #     pass
+        # else:
+        # # else create objects as they exist in memory
+        #     # action
+        #     self.check("actions", self.data)
+        #     # featureaction
+        #     self.check("featureactions", self.data)
+        #     # result
+        #     self.check("results", self.data)
 
