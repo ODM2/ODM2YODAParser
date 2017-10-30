@@ -1,10 +1,6 @@
-odm2api
-pyodbc
-pymysql
 numpy
-sqlalchemy
-wxpython
-pyyaml
+odm2api
 openpyxl
 pandas
-xlrd
+pyyaml
+wxpython==3.0.0.0
