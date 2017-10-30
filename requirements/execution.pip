@@ -1,7 +1,0 @@
-## Pip-dependencies for installing and running the project.
-##  from: https://caremad.io/2013/07/setup-vs-requirement/
-
-#--index-url https://pypi.python.org/simple/
-# and https://github.com/pandalone/pandalone/blob/master/requirements/execution.pip
-
--e .
