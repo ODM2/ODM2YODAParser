@@ -1,4 +1,7 @@
-import wx
+# import wx
+from wx import FileDialog, FD_CHANGE_DIR, ID_OK
+
+
 
 from yodatools.dataloader.view.WizardHomePageView import WizardHomePageView
 
@@ -20,13 +23,13 @@ class WizardHomePageController(WizardHomePageView):
             self.GetTopLevelParent().next_button.Disable()
 
     def on_browse_button(self, event):
-        dialog = wx.FileDialog(
+        dialog = FileDialog(
             self,
             message='Add file',
-            style=wx.FD_CHANGE_DIR
+            style=FD_CHANGE_DIR
         )
 
-        if dialog.ShowModal() != wx.ID_OK:
+        if dialog.ShowModal() != ID_OK:
             return
 
         self.input_file_text_ctrl.SetValue(dialog.GetPath())

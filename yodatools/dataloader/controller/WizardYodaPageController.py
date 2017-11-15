@@ -1,5 +1,6 @@
-import wx
-
+# import wx
+from wx import FileDialog, FD_SAVE, ID_OK
+#
 from yodatools.dataloader.view.WizardYodaPageView import WizardYodaPageView
 
 
@@ -9,19 +10,19 @@ class WizardYodaPageController(WizardYodaPageView):
         self.title = title
 
     def on_browse_button(self, event):
-        # dialog = wx.FileDialog(
+        # dialog = FileDialog(
         #     self,
         #     message='Save to...',
-        #     style=wx.DD_CHANGE_DIR
+        #     style=DD_CHANGE_DIR
         # )
-        dialog = wx.FileDialog(
+        dialog = FileDialog(
             self,
             'YAML Output file',
             wildcard="YAML File (*.yaml)|*.yaml",
-            style=wx.FD_SAVE
+            style=FD_SAVE
         )
 
-        if dialog.ShowModal() != wx.ID_OK:
+        if dialog.ShowModal() != ID_OK:
             return
 
         self.file_text_ctrl.SetValue(dialog.GetPath())

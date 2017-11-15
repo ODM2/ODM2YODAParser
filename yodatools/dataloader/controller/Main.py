@@ -1,11 +1,14 @@
-import wx
+# import wx
+from wx import App
+
+
 from yodatools.dataloader.controller.WizardController import WizardController
 
 import pyodbc
 import psycopg2
 
 def main():
-    app = wx.App()
+    app = App()
     controller = WizardController(None)
     controller.CenterOnScreen()
     controller.Show()

@@ -7,8 +7,8 @@ from WizardSummaryPageController import WizardSummaryPageController
 from WizardYodaPageController import WizardYodaPageController
 from WizardSQLitePageController import WizardSQLitePageController
 
-import wx
-
+# import wx
+from wx import MessageDialog, YES_NO , ICON_EXCLAMATION, ID_NO
 from yodatools.dataloader.view.WizardView import WizardView
 
 
@@ -57,14 +57,14 @@ class WizardController(WizardView):
 
         """
 
-        dialog = wx.MessageDialog(
+        dialog = MessageDialog(
             self,
             message='It is unsafe to exit while a process is running.',
-            style=wx.YES_NO | wx.ICON_EXCLAMATION
+            style=YES_NO | ICON_EXCLAMATION
         )
 
         dialog.SetYesNoLabels(yes='Cancel', no='Exit')
-        if dialog.ShowModal() == wx.ID_NO:
+        if dialog.ShowModal() == ID_NO:
             self.Destroy()
         dialog.Destroy()
 
