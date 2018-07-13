@@ -179,7 +179,7 @@ class WizardController(WizardView):
 
         input_file = self.home_page.input_file_text_ctrl.GetValue()
 
-        yoda_output_file_path=sqlite_conn= odm2_conn =None
+        yoda_output_file_path = sqlite_conn = odm2_conn = None
 
         # Get the directory to save the yaml output
         sp = self.selected_pages()
@@ -203,9 +203,9 @@ class WizardController(WizardView):
         ##################################
         # Uncomment the lines below to have it threading
         ##################################
-        # Must be a tuple not a list
+        # # Must be a tuple not a list
         # summary_run_arguments = (input_file, yoda_output_file_path)
-
+        #
         # self.thread = threading.Thread(
         #     target=self.summary_page.run,
         #     args=summary_run_arguments,

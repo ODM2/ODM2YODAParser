@@ -3,8 +3,8 @@ Example using bootalchemy (if the model is within the same module)
 """
 #from _yaml import ScannerError
 from .bootalchemy.loader import Loader, YamlLoader
-from odm2api.ODM2 import serviceBase
-import odm2api.ODM2.models as models
+# from odm2api import serviceBase
+import odm2api.models as models
 import yaml
 from collections import OrderedDict
 

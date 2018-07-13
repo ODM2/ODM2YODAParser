@@ -3,7 +3,7 @@ import os
 from tests.test_util import build_ts_session, build_ts_specimen_session
 from yodatools.converter.Outputs.dbOutput import dbOutput
 from odm2api.ODMconnection import dbconnection
-from odm2api.ODM2.models import People, SamplingFeatures, MeasurementResultValues, TimeSeriesResultValues
+from odm2api.models import People, SamplingFeatures, MeasurementResultValues, TimeSeriesResultValues
 
 
 curr_folder = os.path.abspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__))))

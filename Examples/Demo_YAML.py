@@ -10,8 +10,8 @@ pp = pprint.PrettyPrinter(indent=8)
 
 try:
     # check to make sure that these imports happen
-    from odm2api.ODM2.models import *
-    # from ODM2PythonAPI.src.api.ODM2.new_services import createService
+    from odm2api.models import *
+    # from ODM2PythonAPI.src.api.new_services import createService
     from odm2api.ODMconnection import dbconnection
     from yodatools.yodaparser.yamlFunctions import YamlFunctions
 except ImportError as e:

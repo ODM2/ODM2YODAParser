@@ -1,6 +1,6 @@
 import os
 import openpyxl
-from odm2api.ODM2.models import \
+from odm2api.models import \
     (DataSets,
      Citations,
      AuthorLists,
@@ -31,7 +31,7 @@ import xlrd
 import pandas as pd
 
 
-class ExcelTimeseries():
+class ExcelTimeseries(object):
 
     # https://automatetheboringstuff.com/chapter12/
     def __init__(self, input_file, **kwargs):
@@ -286,7 +286,7 @@ class ExcelTimeseries():
             else:
                 orgs = parse_organizations(table, self._session)
 
-        self._session.flush()
+        # self._session.flush()
 
         for aff in affiliations:
             if aff.OrganizationObj.OrganizationName in orgs:
@@ -550,13 +550,14 @@ class ExcelTimeseries():
                     series_result.ProcessingLevelObj = proc_level
 
                     series_result.StatusCV = "Unknown"
-                    series_result.SampledMediumCV = row[11].value
+                    series_result.SampledMediumCV = row[10].value
                     series_result.ValueCount = value_count
 
                     series_result.ResultDateTime = start_date
 
                     self._session.add(series_result)
-                    self._session.flush()
+                    # self._session.flush()  # steph
+                    self._session.commit()  # me
 
                     if self.dataset is not None:
                         #DataSetsResults
@@ -615,8 +616,16 @@ class ExcelTimeseries():
 
         del serial['level_0']
 
-        # TODO does this fail for sqlite in memory
-        # self._session.close()
+
+        if ':memory:' not in repr(self._engine):
+            # ':memory:' is part of the session engine connection string
+            # when using sqlite in-memory storage (as opposed to a file).
+            # If the session engine is connected to a database NOT stored
+            # in memory, the connection must be closed before
+            # 'serial.to_sql' can connect to the database.
+            self._session.close()
+
+
         setSchema(self._engine)
         serial.to_sql(TimeSeriesResultValues.__tablename__,
                       schema=TimeSeriesResultValues.__table_args__['schema'],
@@ -624,5 +633,7 @@ class ExcelTimeseries():
                       chunksize=1000,
                       con=self._engine,
                       index=False)
+
         self._session.flush()
+
         return serial

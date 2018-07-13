@@ -4,7 +4,7 @@ import unittest
 import openpyxl
 
 from yodatools.converter.Inputs.excelInput import ExcelInput
-from odm2api.ODM2.models import People, SamplingFeatures
+from odm2api.models import People, SamplingFeatures
 
 class ExcelTest(unittest.TestCase):
 

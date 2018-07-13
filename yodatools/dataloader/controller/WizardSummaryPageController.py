@@ -12,7 +12,7 @@ class WizardSummaryPageController(WizardSummaryPageView):
         self.parent = parent
         self.title = title
 
-    def run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection = None):
+    def run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
 
         # Start gauge with 2% to show starting progress
         self.gauge.SetValue(2)
@@ -20,18 +20,20 @@ class WizardSummaryPageController(WizardSummaryPageView):
         # Check if it is a yaml, or excel file
         file_type = verify_file_type(input_file)
 
+        conn = next((conn for conn in [odm2_connection, sqlite_connection] if conn is not None), None)
+
         if file_type == 'invalid':  # Accept only excel and yaml files
             print('File extension invalid or no file')
             return
 
         if file_type == 'excel':
             kwargs = {'gauge': self.gauge}
-            excel = ExcelInput()
+            excel = ExcelInput(conn=conn)
             excel.parse(input_file, **kwargs)
-            session = excel.sendODM2Session()
+            session = excel.session
         else:
             # Must be a yoda file
-            yoda = yamlInput(input_file)
+            yoda = yamlInput()
             yoda.parse(input_file)
             session = yoda.sendODM2Session()
 

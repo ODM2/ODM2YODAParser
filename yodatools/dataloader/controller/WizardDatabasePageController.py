@@ -7,6 +7,7 @@ class WizardDatabasePageController(WizardDatabasePageView):
 
         del self.panel.choices['SQLite']
         self.panel.cbDatabaseType.SetItems(self.panel.choices.keys())
+        self.panel.cbDatabaseType.SetStringSelection('MySQL')
 
 
         self.title = title

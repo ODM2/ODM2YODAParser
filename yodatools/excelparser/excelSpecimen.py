@@ -1,6 +1,6 @@
 import os
 import openpyxl
-from odm2api.ODM2.models import *
+from odm2api.models import *
 from yodatools.converter.Abstract import iInputs
 import pandas
 import time
@@ -34,7 +34,8 @@ class ExcelSpecimen():
         CONST_NAME = "_Table"
         table_name_range = {}
         for name_range in self.name_ranges:
-            if CONST_NAME in name_range.name:
+            name = name_range.name
+            if CONST_NAME in name:
                 sheet, dimensions = name_range.attr_text.split('!')
                 sheet = sheet.replace('\'', '')
 
@@ -103,7 +104,7 @@ class ExcelSpecimen():
         self.parse_specimens()
         self.parse_analysis_results()
 
-        # self._session.commit()
+        self._session.commit()
 
         end = time.time()
         print(end - start)

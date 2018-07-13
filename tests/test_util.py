@@ -1,5 +1,5 @@
 
-from odm2api.ODM2.models import Base
+from odm2api.models import Base
 from odm2api.ODMconnection import dbconnection
 import os
 curr_folder = os.path.abspath(os.path.dirname(__file__))
