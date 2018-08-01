@@ -1,6 +1,8 @@
-
 from odm2api.models import Base
-
+from sqlalchemy.exc import IntegrityError
+import sqlalchemy.ext.declarative.api as api
+import pandas as pd
+from sqlalchemy import func
 
 class iOutputs:
 
@@ -15,17 +17,22 @@ class iOutputs:
             tmplist = []
             try:
                 if t.__tablename__.lower() == "timeseriesresultvalues":
-                    import pandas as pd
-                    sql = """SELECT * FROM TimeSeriesResultValues"""
+                    # TODO: Test if this works for database connections to mssql and mysql
+                    if 'postgresql' in session.bind.name:
+                        sql = """SELECT * FROM odm2.timeseriesresultvalues"""
+                    else:
+                        sql = """SELECT * FROM TimeSeriesResultValues"""
                     tbl = pd.read_sql(sql, session.connection().connection.connection)
                     tmplist = tbl
                 else:
-                    for o in session.query(t).all():
-                        # session.expunge(o)
-                        tmplist.append(o)
 
-            except Exception as e:
-                print "error: " + e.message
+                    for obj in session.query(t).all():
+                        # session.expunge(o)
+                        tmplist.append(obj)
+
+            except IntegrityError as e:
+                print(e)
+                session.rollback()
 
             if len(tmplist) > 0:
                 data[t.__tablename__] = tmplist
@@ -41,10 +48,10 @@ class iOutputs:
                                         lambda member: inspect.isclass(member) and member.__module__ == "odm2api.models")
 
         for name, Tbl in clsmembers:
-            import sqlalchemy.ext.declarative.api as api
             if isinstance(Tbl, api.DeclarativeMeta):
                 # check to see if the schema is already set correctly
                 tables.append(Tbl)
+
         return tables
 
     def save(self, session, path):

@@ -1,3 +1,4 @@
+from sqlalchemy.exc import IntegrityError
 from yodatools.converter.Abstract import iOutputs
 from odm2api.ODMconnection import dbconnection
 from odm2api.services import *
@@ -8,11 +9,12 @@ import sqlite3
 
 class dbOutput(iOutputs):
 
+    def __init__(self):
+        iOutputs.__init__(self)
+        self.added_objs = {}
+
     def accept(self):
         pass
-
-    def __init__(self):
-        self.added_objs = {}
 
     def connect_to_db(self, connection_string):
         self.session_factory_out = dbconnection.createConnectionFromString(connection_string)
@@ -26,7 +28,7 @@ class dbOutput(iOutputs):
         self.data = self.parseObjects(session)
         self.connect_to_db(connection_string)
         
-        #datasets
+        # datasets
         self.check("datasets", self.data)
         # organization
         self.check("organizations", self.data)
@@ -81,7 +83,7 @@ class dbOutput(iOutputs):
         if timeseriesresultvalues is not None:
             try:
                 self.save_ts(timeseriesresultvalues)
-            except Exception as e:
+            except IntegrityError as e:
                 print(e)
 
         self._session_out.commit()
@@ -132,6 +134,7 @@ class dbOutput(iOutputs):
 
             # save the new Primary key to the dictionary
 
+            new_pk = None
             # find the primary key
             for k in new_obj.__dict__.keys():
                 if k.lower() == new_obj.__mapper__.primary_key[0].name:
@@ -141,7 +144,8 @@ class dbOutput(iOutputs):
             # new_pk = getattr(new_obj, pk)
 
             # save pk to dictionary
-            self.added_objs[obj] = new_pk
+            if new_pk is not None:
+                self.added_objs[obj] = new_pk
 
 
         except Exception as e:
@@ -217,8 +221,8 @@ class dbOutput(iOutputs):
 
         for obj in data.get("results", []):
 
-            uuid = {}
-            uuid["ResultUUID"] = str(obj.ResultUUID)
+            uuid = {"ResultUUID": str(obj.ResultUUID)}
+
             instance = self._session_out.query(Results).filter_by(**uuid).first()
             if instance:
                 self.added_objs[obj] = instance.ResultID

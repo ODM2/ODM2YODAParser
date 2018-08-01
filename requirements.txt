@@ -1,5 +1,7 @@
+pyodbc
 numpy==1.13.*
 odm2api==0.6.0
+pymysql==0.7.5
 openpyxl==2.5.0a1
 pandas==0.20.1
 pyyaml==3.12

@@ -11,23 +11,16 @@ class ExcelInput(iInputs):
     def __init__(self, **kwargs):
         super(ExcelInput, self).__init__(**kwargs)
 
+        self.output_file = kwargs.get('output_file', 'export.csv')
+        self.gauge = kwargs.get('gauge', None)
 
-        self.output_file = "export.csv"
-        self.gauge = None
-
-
-        if 'output_file' in kwargs:
-            self.output_file = kwargs['output_file']
-
-        if 'gauge' in kwargs:
-            self.gauge = kwargs['gauge']
 
     @property
     def session(self):
         return self._session
 
 #     def parse(self, file_path=None):
-    def parse(self, file_path, **kwargs):
+    def parse(self, file_path):
         """
         If any of the methods return early, then check that they have the table ranges
         The table range should exist in the tables from get_table_name_range()

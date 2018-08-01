@@ -27,9 +27,8 @@ class WizardSummaryPageController(WizardSummaryPageView):
             return
 
         if file_type == 'excel':
-            kwargs = {'gauge': self.gauge}
-            excel = ExcelInput(conn=conn)
-            excel.parse(input_file, **kwargs)
+            excel = ExcelInput(conn=conn, gauge=self.gauge)
+            excel.parse(input_file)
             session = excel.session
         else:
             # Must be a yoda file

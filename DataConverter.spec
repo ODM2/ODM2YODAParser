@@ -4,10 +4,12 @@ block_cipher = None
 
 
 a = Analysis(['yodatools\\dataloader\\controller\\Main.py'],
-             pathex=['D:\\DEV\\YODA-Tools'],
+             pathex=[],
              binaries=[],
              datas=[],
-             hiddenimports=[],
+             hiddenimports=[
+                'pymysql'
+             ],
              hookspath=[],
              runtime_hooks=[],
              excludes=[],
@@ -26,4 +28,4 @@ exe = EXE(pyz,
           strip=False,
           upx=True,
           runtime_tmpdir=None,
-          console=True )
+          console=False )

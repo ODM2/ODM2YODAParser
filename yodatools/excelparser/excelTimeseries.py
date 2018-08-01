@@ -1,5 +1,8 @@
 import os
 import openpyxl
+from sqlalchemy import func
+from sqlalchemy.exc import IntegrityError
+
 from odm2api.models import \
     (DataSets,
      Citations,
@@ -20,6 +23,8 @@ from odm2api.models import \
      TimeSeriesResults,
      DataSetsResults,
      TimeSeriesResultValues,
+     CVUnitsType,
+     CVVariableName,
      setSchema)
 
 
@@ -37,18 +42,21 @@ class ExcelTimeseries(object):
     def __init__(self, input_file, **kwargs):
 
         self.input_file = input_file
-        self.gauge = None
+        self.gauge = kwargs.get('gauge', None)
         self.total_rows_to_read = 0
-        self.rows_read = 0
-
-        if 'gauge' in kwargs:
-            self.gauge = kwargs['gauge']
+        self.rows_read = 0.
 
         self.workbook = None
         self.sheets = []
         self.name_ranges = None
         self.tables = {}
         self._init_data(input_file)
+
+    def __flush(self):
+        try:
+            self._session.flush()
+        except IntegrityError:
+            self._session.rollback()
 
     def parse(self, session_factory):
 
@@ -112,10 +120,10 @@ class ExcelTimeseries(object):
     def count_number_of_rows_to_parse(self, dimensions):
         # http://stackoverflow.com/questions/1450897/python-removing-characters-except-digits-from-string
         top, bottom = dimensions.replace('$', '').split(':')
-        all = string.maketrans('', '')
-        nodigs = all.translate(all, string.digits)
-        top = int(top.translate(all, nodigs))
-        bottom = int(bottom.translate(all, nodigs))
+        all_ = string.maketrans('', '')
+        nodigs = all_.translate(all_, string.digits)
+        top = int(top.translate(all_, nodigs))
+        bottom = int(bottom.translate(all_, nodigs))
         self.total_rows_to_read += (bottom - top)
 
 
@@ -124,8 +132,11 @@ class ExcelTimeseries(object):
         if not self.gauge:
             return  # No gauge was passed in, but that's ok :)
 
-        self.rows_read += 1
-        value = float(self.rows_read) / self.total_rows_to_read * 100.0
+        self.rows_read += 1.
+        try:
+            value = self.rows_read / self.total_rows_to_read * 100.0
+        except ZeroDivisionError:
+            value = 0
         self.gauge.SetValue(value)
 
     def get_sheet_and_table(self, sheet_name):
@@ -143,14 +154,16 @@ class ExcelTimeseries(object):
 
         sheet, tables = self.get_sheet_and_table(CONST_DATASET)
 
-        dataset= DataSets()
+        dataset = DataSets()
         dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
         dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
         dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
         dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
         dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
         self._session.add(dataset)
-        self._session.flush()
+
+        self.__flush()
+
         self.dataset = dataset
 
 
@@ -162,7 +175,8 @@ class ExcelTimeseries(object):
         citation.CitationLink = self.get_range_value("CitationLink", sheet)
         # citation.DOI
         self._session.add(citation)
-        self._session.flush()
+
+        self.__flush()
 
 
         #TODO only do this if the citation is set
@@ -193,7 +207,8 @@ class ExcelTimeseries(object):
                     self.__updateGauge()
 
         self._session.add_all(authors)
-        self._session.flush()
+
+        self.__flush()
 
     def parse_units(self):
         CONST_UNITS = 'Units'
@@ -214,6 +229,15 @@ class ExcelTimeseries(object):
                 unit.UnitsAbbreviation = row[1].value
                 unit.UnitsName = row[2].value
                 unit.UnitsLink = row[3].value
+
+                # Finding the right CVUnitsType object only seems to be a problem with postgresql...
+                if self._engine.name == 'postgresql':
+                    unitstypecv = self._session.query(CVUnitsType)\
+                        .filter(func.lower(CVUnitsType.Name) == func.lower(unit.UnitsTypeCV))\
+                        .first()
+
+                    if unitstypecv:
+                        unit.UnitsTypeCV = unitstypecv.Name
 
                 if unit.UnitsTypeCV is not None:
                     units.append(unit)
@@ -293,76 +317,80 @@ class ExcelTimeseries(object):
                 aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
 
         self._session.add_all(affiliations)
-        self._session.flush()
+
+        self.__flush()
 
     def parse_processing_level(self):
-        CONST_PROC_LEVEL = 'Processing Levels'
-        sheet, tables = self.get_sheet_and_table(CONST_PROC_LEVEL)
+        with self._session.no_autoflush:
+            CONST_PROC_LEVEL = 'Processing Levels'
+            sheet, tables = self.get_sheet_and_table(CONST_PROC_LEVEL)
 
-        if not len(tables):
-            print "No processing levels found"
-            return []
+            if not len(tables):
+                print "No processing levels found"
+                return []
 
-        processing_levels = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+            processing_levels = []
+            for table in tables:
+                cells = sheet[self.get_range_address(table)]
 
-            for row in cells:
-                if row[0].value is not None:
-                    proc_lvl = ProcessingLevels()
-                    proc_lvl.ProcessingLevelCode = row[0].value
-                    proc_lvl.Definition = row[1].value
-                    proc_lvl.Explanation = row[2].value
-                    processing_levels.append(proc_lvl)
+                for row in cells:
+                    if row[0].value is not None:
+                        proc_lvl = ProcessingLevels()
+                        proc_lvl.ProcessingLevelCode = row[0].value
+                        proc_lvl.Definition = row[1].value
+                        proc_lvl.Explanation = row[2].value
+                        processing_levels.append(proc_lvl)
 
-                self.__updateGauge()
+                    self.__updateGauge()
 
-        # return processing_levels
-        self._session.add_all(processing_levels)
-        self._session.flush()
+            # return processing_levels
+            self._session.add_all(processing_levels)
+
+        self.__flush()
 
     def parse_sampling_feature(self):
-        SHEET_NAME = 'Sampling Features'
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
+        with self._session.no_autoflush:
+            SHEET_NAME = 'Sampling Features'
+            sheet, tables = self.get_sheet_and_table(SHEET_NAME)
 
-        sites = []
-        cells = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+            sites = []
+            cells = []
+            for table in tables:
+                cells = sheet[self.get_range_address(table)]
 
-        spatial_references = self.parse_spatial_reference()
-        elevation_datum = self.get_range_value("ElevationDatum", sheet)
-        spatial_ref_name = self.get_range_value("LatLonDatum", sheet)
-        spatial_references_obj = spatial_references[spatial_ref_name]
+            spatial_references = self.parse_spatial_reference()
+            elevation_datum = self.get_range_value("ElevationDatum", sheet)
+            spatial_ref_name = self.get_range_value("LatLonDatum", sheet)
+            spatial_references_obj = spatial_references[spatial_ref_name]
 
-        for row in cells:
-            if all([row[1].value, row[2].value, row[3].value]):# are all of the required elements present
-                site = Sites()
-                site.SamplingFeatureUUID = row[0].value
-                site.SamplingFeatureTypeCV = row[1].value
-                site.SamplingFeatureGeotypeCV = row[2].value
-                site.SamplingFeatureCode = row[3].value
-                site.SamplingFeatureName = row[4].value
-                site.SamplingFeatureDescription = row[5].value
-                site.FeatureGeometryWKT = row[6].value
+            for row in cells:
+                if all([row[1].value, row[2].value, row[3].value]):# are all of the required elements present
+                    site = Sites()
+                    site.SamplingFeatureUUID = row[0].value
+                    site.SamplingFeatureTypeCV = row[1].value
+                    site.SamplingFeatureGeotypeCV = row[2].value
+                    site.SamplingFeatureCode = row[3].value
+                    site.SamplingFeatureName = row[4].value
+                    site.SamplingFeatureDescription = row[5].value
+                    site.FeatureGeometryWKT = row[6].value
 
-                site.Elevation_m = row[7].value
+                    site.Elevation_m = row[7].value
 
-                site.SiteTypeCV = row[10].value
-                site.Latitude = row[11].value
-                site.Longitude = row[12].value
-                site.ElevationDatumCV = elevation_datum
-                site.SpatialReferenceObj = spatial_references_obj
+                    site.SiteTypeCV = row[10].value
+                    site.Latitude = row[11].value
+                    site.Longitude = row[12].value
+                    site.ElevationDatumCV = elevation_datum
+                    site.SpatialReferenceObj = spatial_references_obj
 
-                sites.append(site)
-                self.__updateGauge()
+                    sites.append(site)
+                    self.__updateGauge()
 
-            self._session.add_all(sites)
-            self._session.flush()
+                self._session.add_all(sites)
 
-
+            self.__flush()
 
     def parse_spatial_reference(self):
+        # with self._session.no_autoflush:
         SHEET_NAME = "SpatialReferences"
         sheet, tables = self.get_sheet_and_table(SHEET_NAME)
 
@@ -384,70 +412,82 @@ class ExcelTimeseries(object):
         return spatial_references
 
     def parse_methods(self):
-        CONST_METHODS = "Methods"
-        sheet, tables = self.get_sheet_and_table(CONST_METHODS)
 
-        if not len(tables):
-            print "No methods found"
-            return []
+        with self._session.no_autoflush:
 
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+            CONST_METHODS = "Methods"
+            sheet, tables = self.get_sheet_and_table(CONST_METHODS)
 
-            for row in cells:
-                method = Methods()
-                method.MethodTypeCV = row[0].value
-                method.MethodCode = row[1].value
-                method.MethodName = row[2].value
-                method.MethodDescription = row[3].value
-                method.MethodLink = row[4].value
+            if not len(tables):
+                print "No methods found"
+                return []
 
-                # If organization does not exist then it returns None
-                org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
-                method.OrganizationObj = org
+            for table in tables:
+                cells = sheet[self.get_range_address(table)]
 
-                if method.MethodCode:  # Cannot store empty/None objects
-                    self._session.add(method)
+                for row in cells:
+                    method = Methods()
+                    method.MethodTypeCV = row[0].value
+                    method.MethodCode = row[1].value
+                    method.MethodName = row[2].value
+                    method.MethodDescription = row[3].value
+                    method.MethodLink = row[4].value
 
-                self.__updateGauge()
+                    # If organization does not exist then it returns None
+                    org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
+                    method.OrganizationObj = org
 
-        self._session.flush()
+                    if method.MethodCode:  # Cannot store empty/None objects
+                        self._session.add(method)
+
+                    self.__updateGauge()
+
+        self.__flush()
 
     def parse_variables(self):
+        with self._session.no_autoflush:
+            CONST_VARIABLES = "Variables"
 
-        CONST_VARIABLES = "Variables"
+            if CONST_VARIABLES not in self.tables:
+                print "No Variables found"
+                return []
 
-        if CONST_VARIABLES not in self.tables:
-            print "No Variables found"
-            return []
+            sheet = self.workbook.get_sheet_by_name(CONST_VARIABLES)
+            tables = self.tables[CONST_VARIABLES]
 
-        sheet = self.workbook.get_sheet_by_name(CONST_VARIABLES)
-        tables = self.tables[CONST_VARIABLES]
+            for table in tables:
+                cells = sheet[self.get_range_address(table)]
+                for row in cells:
+                    var = Variables()
+                    var.VariableTypeCV = row[0].value
+                    var.VariableCode = row[1].value
+                    var.VariableNameCV = row[2].value
+                    var.VariableDefinition = row[3].value
+                    var.SpeciationCV = row[4].value
 
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-            for row in cells:
-                var = Variables()
-                var.VariableTypeCV = row[0].value
-                var.VariableCode = row[1].value
-                var.VariableNameCV = row[2].value
-                var.VariableDefinition = row[3].value
-                var.SpeciationCV = row[4].value
+                    # Finding the right CVUnitsType object only seems to be a problem with postgresql...
+                    if self._engine.name == 'postgresql':
+                        varnamecv = self._session.query(CVVariableName) \
+                            .filter(func.lower(CVVariableName.Name) == func.lower(var.VariableNameCV)) \
+                            .first()
 
-                if row[5].value is not None:
-                    if row[5].value == 'NULL':
-                        #TODO break somehow because not all required data is filled out
-                        print "All Variables must contain a valid No Data Value!"
-                        var.NoDataValue = None
-                    else:
-                        var.NoDataValue = row[5].value
+                        if varnamecv:
+                            var.VariableNameCV = varnamecv.Name
 
-                if var.NoDataValue is not None:  # NoDataValue cannot be None
-                    self._session.add(var)
+                    if row[5].value is not None:
+                        if row[5].value == 'NULL':
+                            #TODO break somehow because not all required data is filled out
+                            print "All Variables must contain a valid No Data Value!"
+                            var.NoDataValue = None
+                        else:
+                            var.NoDataValue = row[5].value
 
-                self.__updateGauge()
+                    if var.NoDataValue is not None:  # NoDataValue cannot be None
+                        self._session.add(var)
 
-        self._session.flush()
+                    self.__updateGauge()
+
+        self.__flush()
 
     def is_valid(self, iterable):
         for element in iterable:
@@ -535,7 +575,7 @@ class ExcelTimeseries(object):
 
 
                     units_for_result = self._session.query(Units).filter_by(UnitsName=row[8].value).first()
-                    proc_level = self._session.query(ProcessingLevels).filter_by(ProcessingLevelCode=row[9].value).first()
+                    proc_level = self._session.query(ProcessingLevels).filter_by(ProcessingLevelCode=str(row[9].value)).first()
 
                     units_for_agg = self._session.query(Units).filter_by(UnitsName=row[12].value).first()
 
@@ -578,7 +618,7 @@ class ExcelTimeseries(object):
                     metadata[row[1].value] = my_meta
 
                     # self._session.add(measure_result_value)
-                    self._session.flush()
+                    self.__flush()
 
                     self.__updateGauge()
 
@@ -621,10 +661,13 @@ class ExcelTimeseries(object):
             # ':memory:' is part of the session engine connection string
             # when using sqlite in-memory storage (as opposed to a file).
             # If the session engine is connected to a database NOT stored
-            # in memory, the connection must be closed before
-            # 'serial.to_sql' can connect to the database.
+            # in memory, the connection must be closed before 'serial.to_sql'
+            # can connect to the database.
             self._session.close()
 
+        if 'postgresql' in repr(self._engine):
+            # Column names are lower cased when using postgresql...
+            serial.columns = map(str.lower, serial.columns)
 
         setSchema(self._engine)
         serial.to_sql(TimeSeriesResultValues.__tablename__,

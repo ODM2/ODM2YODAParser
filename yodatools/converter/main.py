@@ -5,6 +5,7 @@ __author__ = 'Stephanie'
 
 
 import time
+import sys
 
 from argparse import ArgumentParser
 
@@ -27,7 +28,7 @@ def run_converter(input_file, yoda_file=None, db_conn=None, excel_file=None):
         return
     try:
         if file_type == 'excel':
-            excel = ExcelInput(input_file)
+            excel = ExcelInput(input_file=input_file)
             excel.parse()
             session = excel.sendODM2Session()
         else:

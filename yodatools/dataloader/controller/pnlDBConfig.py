@@ -91,6 +91,8 @@ class pnlDBConfig(clsDBConfiguration):
                 return False
 
         try:
+            wx.BusyCursor()
+
             self.connection_string = dbc.buildConnectionString(**conn_dict)
             if dbc.isValidConnection(self.connection_string):
                 message = 'This connection is valid'

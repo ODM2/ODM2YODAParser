@@ -5,9 +5,10 @@ from yodatools.converter.Abstract import iInputs
 import pandas
 import time
 import string
+from sqlalchemy.exc import IntegrityError
 
 
-class ExcelSpecimen():
+class ExcelSpecimen(object):
     def __init__(self, input_file, **kwargs):
 
         self.input_file = input_file
@@ -24,6 +25,12 @@ class ExcelSpecimen():
         self.name_ranges = None
         self.tables = {}
         self._init_data(input_file)
+
+    @property
+    def session(self):
+        if hasattr(self, '_session'):
+            return self._session
+        return None
 
     def get_table_name_ranges(self):
         """
@@ -166,7 +173,7 @@ class ExcelSpecimen():
 
                 # Feature Actions
                 sampling_feature = self._session.query(SamplingFeatures)\
-                    .filter_by(SamplingFeatureCode=row[1].value)\
+                    .filter_by(SamplingFeatureUUID=row[0].value)\
                     .first()
 
                 feat_act.SamplingFeatureObj = sampling_feature
@@ -290,7 +297,18 @@ class ExcelSpecimen():
                 org.OrganizationName = row[2].value
                 org.OrganizationDescription = row[3].value
                 org.OrganizationLink = row[4].value
+
                 session.add(org)
+                try:
+                    session.commit()
+                except IntegrityError:
+                    session.rollback()
+
+                    q = self.session.query(Organizations).filter(Organizations.OrganizationCode == org.OrganizationCode)
+                    if q:
+                        org = session.merge(q.first())
+
+
                 organizations[org.OrganizationName] = org
                 self.__updateGauge()
 
@@ -331,16 +349,17 @@ class ExcelSpecimen():
             if 'People_Table' == table.name:
                 affiliations = parse_authors(table)
             else:
-                orgs = parse_organizations(table, self._session)
+                orgs = parse_organizations(table, self.session)
 
-        self._session.flush()
+
+        self.session.flush()
 
         for aff in affiliations:
             if aff.OrganizationObj.OrganizationName in orgs:
                 aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
 
-        self._session.add_all(affiliations)
-        self._session.flush()
+        self.session.add_all(affiliations)
+        self.session.flush()
 
     def get_sheet_and_table(self, sheet_name):
         # if sheet_name not in self.tables:
@@ -372,13 +391,25 @@ class ExcelSpecimen():
                 proc_lvl.ProcessingLevelCode = row[0].value
                 proc_lvl.Definition = row[1].value
                 proc_lvl.Explanation = row[2].value
+
+                self.session.add(proc_lvl)
+                try:
+                    self.session.commit()
+                except IntegrityError:
+                    self.session.rollback()
+
+                    q = self.session.query(ProcessingLevels)\
+                            .filter(ProcessingLevels.ProcessingLevelCode == proc_lvl.ProcessingLevelCode)
+                    if q:
+                        proc_lvl = self.session.merge(q.first())
+
                 processing_levels.append(proc_lvl)
 
                 self.__updateGauge()
 
         # return processing_levels
-        self._session.add_all(processing_levels)
-        self._session.flush()
+        self.session.add_all(processing_levels)
+        self.session.flush()
 
     def parse_sampling_feature(self):
         SHEET_NAME = 'Sampling Features'
@@ -434,10 +465,18 @@ class ExcelSpecimen():
             site.ElevationDatumCV = elevation_datum
             site.SpatialReferenceObj = spatial_references_obj
 
-            sites.append(site)
+            # sites.append(site)
 
-            self._session.add(site)
-            self._session.flush()
+            self.session.add(site)
+
+            try:
+                self.session.commit()
+            except IntegrityError:
+                self.session.rollback()
+
+                q = self.session.query(Sites).filter(Sites.SamplingFeatureCode == site.SamplingFeatureCode)
+                if q:
+                    _ = self.session.merge(q.first())
 
             self.__updateGauge()
 
