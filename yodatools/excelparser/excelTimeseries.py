@@ -135,9 +135,9 @@ class ExcelTimeseries(object):
         self.rows_read += 1.
         try:
             value = self.rows_read / self.total_rows_to_read * 100.0
+            self.gauge.SetValue(value)
         except ZeroDivisionError:
-            value = 0
-        self.gauge.SetValue(value)
+            pass
 
     def get_sheet_and_table(self, sheet_name):
         if sheet_name not in self.tables:

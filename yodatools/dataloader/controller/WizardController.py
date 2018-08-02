@@ -8,8 +8,10 @@ from WizardYodaPageController import WizardYodaPageController
 from WizardSQLitePageController import WizardSQLitePageController
 
 import wx
+from wx.lib.pubsub import pub
 
 from yodatools.dataloader.view.WizardView import WizardView
+from odm2api.ODMconnection import dbconnection as dbc
 
 
 class WizardController(WizardView):
@@ -47,6 +49,8 @@ class WizardController(WizardView):
 
         self.show_home_page()
         self.SetSize((450, 450))
+
+        pub.subscribe(self.handleError, 'wizardcontroller.error')
 
     def display_warning(self):
         """
@@ -86,7 +90,10 @@ class WizardController(WizardView):
         self.page_number = self.__go_to_next_available_page(forward=True)
         self.__check_if_on_page_before_summary()
 
-        self.__update_page()
+        try:
+            self.__update_page()
+        except AttributeError:
+            pass
 
     def __check_if_on_page_before_summary(self):
         self.is_on_page_before_summary = True
@@ -113,7 +120,10 @@ class WizardController(WizardView):
         self.page_number = self.__go_to_next_available_page(forward=False)
         self.__check_if_on_page_before_summary()
 
-        self.__update_page()
+        try:
+            self.__update_page()
+        except AttributeError:
+            pass
 
     def __update_page(self):
         self.title_text.SetLabel(self.wizard_pages[self.page_number].title)
@@ -122,7 +132,36 @@ class WizardController(WizardView):
             self.will_flip_to_first_page()
         elif self.page_number == len(self.wizard_pages) - 1:
             self.will_flip_to_last_page()
-            self.execute()  # Parse and save
+
+            yoda_output_file_path = odm2_conn = sqlite_conn = None
+
+            # Get the directory to save the yaml output
+            sp = self.selected_pages()
+            if 'yoda' in sp:
+                yoda_page = self.selected_pages()['yoda']
+                file_path = yoda_page.file_text_ctrl.GetValue()
+                yoda_output_file_path = None if file_path == '' else file_path
+
+            # Get the engine to save the ODM2 output
+            if 'odm2' in sp:
+                database_page = self.selected_pages()['odm2']
+                conn_dict = database_page.panel.getFieldValues()
+                odm2_conn = dbc.buildConnectionString(**conn_dict)
+
+            # Get the directory to save the sqlite output
+            if 'sqlite' in sp:
+                sqlite_page = self.selected_pages()['sqlite']
+                conn_dict = sqlite_page.panel.getFieldValues()
+                sqlite_conn = dbc.buildConnectionString(**conn_dict)
+
+            input_file = self.home_page.input_file_text_ctrl.GetValue()
+
+            try:
+                self.execute(input_file, yoda_output_file_path=yoda_output_file_path, odm2_conn=odm2_conn,
+                             sqlite_conn=sqlite_conn)  # Parse and save
+            except Exception as e:
+                wx.MessageBox("Error:\n\n%s" % e.message, style=wx.ICON_ERROR)
+
         elif self.is_on_page_before_summary:
             self.will_flip_to_page_before_summary()
         else:
@@ -171,55 +210,30 @@ class WizardController(WizardView):
 
         return pages
 
-    def execute(self):
+    def execute(self, input_file, yoda_output_file_path=None, odm2_conn=None, sqlite_conn=None):
         # Prevent the thread from  being created twice!
         if self.thread.isAlive():
             print('did not start another thread')
             return
 
-        input_file = self.home_page.input_file_text_ctrl.GetValue()
+        """
+        Uncomment the line below to execute on a single thread
+        """
+        # self.summary_page.run(input_file, yoda_output_file_path, odm2_conn, sqlite_conn)
 
-        yoda_output_file_path = sqlite_conn = odm2_conn = None
+        """
+        Uncomment the lines below to execute on background thread
+        """
+        self.thread = threading.Thread(
+            target=self.summary_page.run,
+            args=(input_file, yoda_output_file_path, odm2_conn, sqlite_conn),
+            name='execution_thread'
+        )
 
-        # Get the directory to save the yaml output
-        sp = self.selected_pages()
-        if sp.has_key('yoda'):
-            yoda_page = self.selected_pages()['yoda']
-            file_path = yoda_page.file_text_ctrl.GetValue()
-            yoda_output_file_path = None if file_path == '' else file_path
+        # When true, the thread will terminate when app is closed
+        # When false, the thread will continue even after the ap is closed
+        self.thread.setDaemon(True)
+        self.thread.start()
 
-        # Get the engine to save the ODM2 output
-        if sp.has_key('odm2'):
-            database_page = self.selected_pages()['odm2']
-            conn_str = database_page.panel.connection_string
-            odm2_conn = None if conn_str == '' else conn_str
-
-        # Get the directory to save the sqlite output
-        if sp.has_key('sqlite'):
-            sqlite_page = self.selected_pages()['sqlite']
-            conn_str = sqlite_page.panel.connection_string
-            sqlite_conn = None if conn_str == '' else conn_str
-
-        ##################################
-        # Uncomment the lines below to have it threading
-        ##################################
-        # # Must be a tuple not a list
-        # summary_run_arguments = (input_file, yoda_output_file_path)
-        #
-        # self.thread = threading.Thread(
-        #     target=self.summary_page.run,
-        #     args=summary_run_arguments,
-        #     name='execution_thread'
-        # )
-        #
-        # # When true, the thread will terminate when app is closed
-        # # When false, the thread will continue even after the ap is closed
-        # self.thread.setDaemon(True)
-        # self.thread.start()
-
-        ##################################
-        # If you uncomment the lines above then you need to comment out
-        # the line below
-        ##################################
-
-        self.summary_page.run(input_file, yoda_output_file_path, odm2_conn, sqlite_conn)
+    def handleError(self, message):
+        wx.MessageBox("An exception has occurred:\n\n%s" % message, style=wx.ICON_ERROR)

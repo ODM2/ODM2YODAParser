@@ -4,6 +4,8 @@ from yodatools.converter.Outputs.yamlOutput import yamlOutput
 from yodatools.converter.Outputs.dbOutput import dbOutput
 from yodatools.dataloader.view.WizardSummaryPageView import WizardSummaryPageView
 
+from wx.lib.pubsub import pub
+
 
 class WizardSummaryPageController(WizardSummaryPageView):
 
@@ -12,7 +14,13 @@ class WizardSummaryPageController(WizardSummaryPageView):
         self.parent = parent
         self.title = title
 
-    def run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
+    def run(self, *args):
+        try:
+            self.__run(*args)
+        except Exception as e:
+            pub.sendMessage('wizardcontroller.error', message=e.message)
+
+    def __run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
 
         # Start gauge with 2% to show starting progress
         self.gauge.SetValue(2)
