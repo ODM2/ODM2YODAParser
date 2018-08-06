@@ -1,4 +1,5 @@
 import sys
+import os
 import wx
 from yodatools.dataloader.controller.WizardController import WizardController
 
@@ -19,4 +20,11 @@ def main():
 
 
 if __name__ == '__main__':
+
+    DEBUG = os.getenv('DEBUG', 'false')
+    if DEBUG.lower() == 'true':
+        os.environ.setdefault('DEBUG', 'true')
+    else:
+        os.environ.setdefault('DEBUG', 'false')
+
     main()

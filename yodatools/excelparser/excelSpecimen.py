@@ -7,9 +7,13 @@ import time
 import string
 from sqlalchemy.exc import IntegrityError
 
+from .ExcelParser import ExcelParser
 
-class ExcelSpecimen(object):
+
+class ExcelSpecimen(ExcelParser):
     def __init__(self, input_file, **kwargs):
+
+        super(ExcelSpecimen, self).__init__()
 
         self.input_file = input_file
 
@@ -17,8 +21,7 @@ class ExcelSpecimen(object):
         self.total_rows_to_read = 0
         self.rows_read = 0
 
-        if 'gauge' in kwargs:
-            self.gauge = kwargs['gauge']
+        self.gauge = kwargs.get('gauge', None)
 
         self.workbook = None
         self.sheets = []
@@ -120,12 +123,18 @@ class ExcelSpecimen(object):
 
     def __updateGauge(self):
         # Objects are passed by reference in Python :)
-        if not self.gauge:
+        if not self.gauge:  # type: wx.Gauge
             return  # No gauge was passed in, but that's ok :)
 
         self.rows_read += 1
-        value = float(self.rows_read) / self.total_rows_to_read * 100.0
-        self.gauge.SetValue(value)
+        try:
+            value = (float(self.rows_read) / self.total_rows_to_read * 100.0) / 2.
+
+            if value >= self.gauge.GetValue():
+                self.gauge.SetValue(value)
+
+        except ZeroDivisionError:
+            pass
 
     def parse_datasets(self):
 
@@ -140,9 +149,10 @@ class ExcelSpecimen(object):
         dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
         dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
         self._session.add(dataset)
-        self._session.flush()
-        self.data_set = dataset
 
+        self._flush()
+
+        self.data_set = dataset
 
     def parse_analysis_results(self):
         SHEET_NAME = "Analysis_Results"
@@ -172,9 +182,11 @@ class ExcelSpecimen(object):
                 action.BeginDateTimeUTCOffset = row[6].value
 
                 # Feature Actions
+                # TODO: row[0] appears to be a ResultUUID, not a SamplingFeatureUUID... fix it...?
                 sampling_feature = self._session.query(SamplingFeatures)\
-                    .filter_by(SamplingFeatureUUID=row[0].value)\
+                    .filter_by(SamplingFeatureCode=str(row[1].value))\
                     .first()
+                    # .filter(SamplingFeatureCode=row[1].value)\
 
                 feat_act.SamplingFeatureObj = sampling_feature
                 feat_act.ActionObj = action
@@ -191,7 +203,7 @@ class ExcelSpecimen(object):
                 related_action.RelationshipTypeCV = "Is child of"
                 collectionAction = self._session.query(FeatureActions)\
                     .filter(FeatureActions.FeatureActionID == SamplingFeatures.SamplingFeatureID)\
-                    .filter(SamplingFeatures.SamplingFeatureCode == row[1].value)\
+                    .filter(SamplingFeatures.SamplingFeatureCode == str(row[1].value))\
                     .first()
 
                 related_action.RelatedActionObj = collectionAction.ActionObj
@@ -243,7 +255,8 @@ class ExcelSpecimen(object):
 
 
                 self._session.add(measure_result_value)
-                self._session.flush()
+
+                self._flush()
 
                 self.__updateGauge()
 
@@ -471,12 +484,15 @@ class ExcelSpecimen(object):
 
             try:
                 self.session.commit()
-            except IntegrityError:
+            except IntegrityError as e:
+                print(e)
+
                 self.session.rollback()
 
-                q = self.session.query(Sites).filter(Sites.SamplingFeatureCode == site.SamplingFeatureCode)
-                if q:
-                    _ = self.session.merge(q.first())
+                # q = self.session.query(Sites).filter(Sites.SamplingFeatureCode == site.SamplingFeatureCode)
+                # if q:
+                #     old_site = q.first()
+                #     _ = self.session.merge(old_site)
 
             self.__updateGauge()
 
@@ -559,31 +575,33 @@ class ExcelSpecimen(object):
         CONST_METHODS = "Methods"
         sheet, tables = self.get_sheet_and_table(CONST_METHODS)
 
-        if not len(tables):
-            print "No methods found"
-            return []
+        with self.session.no_autoflush:
 
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+            if not len(tables):
+                print "No methods found"
+                return []
 
-            for row in cells:
-                method = Methods()
-                method.MethodTypeCV = row[0].value
-                method.MethodCode = row[1].value
-                method.MethodName = row[2].value
-                method.MethodDescription = row[3].value
-                method.MethodLink = row[4].value
+            for table in tables:
+                cells = sheet[self.get_range_address(table)]
 
-                # If organization does not exist then it returns None
-                org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
-                method.OrganizationObj = org
+                for row in cells:
+                    method = Methods()
+                    method.MethodTypeCV = row[0].value
+                    method.MethodCode = row[1].value
+                    method.MethodName = row[2].value
+                    method.MethodDescription = row[3].value
+                    method.MethodLink = row[4].value
 
-                if method.MethodCode:  # Cannot store empty/None objects
-                    self._session.add(method)
+                    # If organization does not exist then it returns None
+                    org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
+                    method.OrganizationObj = org
 
-                self.__updateGauge()
+                    if method.MethodCode:  # Cannot store empty/None objects
+                        self._session.add(method)
 
-        self._session.flush()
+                    self.__updateGauge()
+
+        self._flush()
 
     def parse_variables(self):
 
@@ -596,30 +614,32 @@ class ExcelSpecimen(object):
         sheet = self.workbook.get_sheet_by_name(CONST_VARIABLES)
         tables = self.tables[CONST_VARIABLES]
 
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-            for row in cells:
-                var = Variables()
-                var.VariableTypeCV = row[0].value
-                var.VariableCode = row[1].value
-                var.VariableNameCV = row[2].value
-                var.VariableDefinition = row[3].value
-                var.SpeciationCV = row[4].value
+        with self.session.no_autoflush:
 
-                if row[5].value is not None:
-                    if row[5].value == 'NULL':
-                        #TODO break somehow because not all required data is not filled out
-                        print "All Variables must contain a valid No Data Value!"
-                        var.NoDataValue = None
-                    else:
-                        var.NoDataValue = row[5].value
+            for table in tables:
+                cells = sheet[self.get_range_address(table)]
+                for row in cells:
+                    var = Variables()
+                    var.VariableTypeCV = row[0].value
+                    var.VariableCode = row[1].value
+                    var.VariableNameCV = row[2].value
+                    var.VariableDefinition = row[3].value
+                    var.SpeciationCV = row[4].value
 
-                if var.NoDataValue is not None:  # NoDataValue cannot be None
-                    self._session.add(var)
+                    if row[5].value is not None:
+                        if row[5].value == 'NULL':
+                            #TODO break somehow because not all required data is not filled out
+                            print "All Variables must contain a valid No Data Value!"
+                            var.NoDataValue = None
+                        else:
+                            var.NoDataValue = row[5].value
 
-                self.__updateGauge()
+                    if var.NoDataValue is not None:  # NoDataValue cannot be None
+                        self._session.add(var)
 
-        self._session.flush()
+                    self.__updateGauge()
+
+        self._flush()
 
 
 

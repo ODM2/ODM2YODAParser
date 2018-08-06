@@ -4,7 +4,9 @@ from yodatools.converter.Outputs.yamlOutput import yamlOutput
 from yodatools.converter.Outputs.dbOutput import dbOutput
 from yodatools.dataloader.view.WizardSummaryPageView import WizardSummaryPageView
 
-from wx.lib.pubsub import pub
+import wx
+import os
+# from wx.lib.pubsub import pub
 
 
 class WizardSummaryPageController(WizardSummaryPageView):
@@ -15,10 +17,18 @@ class WizardSummaryPageController(WizardSummaryPageView):
         self.title = title
 
     def run(self, *args):
-        try:
-            self.__run(*args)
-        except Exception as e:
-            pub.sendMessage('wizardcontroller.error', message=e.message)
+
+        # if os.getenv('DEBUG', False) == 'true':
+
+        self.__run(*args)
+
+        # else:
+        #
+        #     try:
+        #         self.__run(*args)
+        #     except Exception as e:
+        #         # pub.sendMessage('wizardcontroller.error', message=e.message)
+        #         wx.MessageBox(e.message, style=wx.ICON_ERROR)
 
     def __run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
 

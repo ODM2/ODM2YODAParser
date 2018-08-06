@@ -4,6 +4,7 @@ import sqlalchemy.ext.declarative.api as api
 import pandas as pd
 from sqlalchemy import func
 
+
 class iOutputs:
 
     def __init__(self):
@@ -20,6 +21,8 @@ class iOutputs:
                     # TODO: Test if this works for database connections to mssql and mysql
                     if 'postgresql' in session.bind.name:
                         sql = """SELECT * FROM odm2.timeseriesresultvalues"""
+                    elif 'mssql' in session.bind.name:
+                        sql = """SELECT * FROM ODM2.TimeSeriesResultValues"""
                     else:
                         sql = """SELECT * FROM TimeSeriesResultValues"""
                     tbl = pd.read_sql(sql, session.connection().connection.connection)

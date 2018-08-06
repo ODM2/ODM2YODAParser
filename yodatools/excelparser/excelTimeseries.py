@@ -35,11 +35,14 @@ import string
 import xlrd
 import pandas as pd
 
+from .ExcelParser import ExcelParser
 
-class ExcelTimeseries(object):
+
+class ExcelTimeseries(ExcelParser):
 
     # https://automatetheboringstuff.com/chapter12/
     def __init__(self, input_file, **kwargs):
+        super(ExcelTimeseries, self).__init__()
 
         self.input_file = input_file
         self.gauge = kwargs.get('gauge', None)
@@ -52,7 +55,7 @@ class ExcelTimeseries(object):
         self.tables = {}
         self._init_data(input_file)
 
-    def __flush(self):
+    def _flush(self):
         try:
             self._session.flush()
         except IntegrityError:
@@ -162,7 +165,7 @@ class ExcelTimeseries(object):
         dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
         self._session.add(dataset)
 
-        self.__flush()
+        self._flush()
 
         self.dataset = dataset
 
@@ -176,7 +179,7 @@ class ExcelTimeseries(object):
         # citation.DOI
         self._session.add(citation)
 
-        self.__flush()
+        self._flush()
 
 
         #TODO only do this if the citation is set
@@ -208,7 +211,7 @@ class ExcelTimeseries(object):
 
         self._session.add_all(authors)
 
-        self.__flush()
+        self._flush()
 
     def parse_units(self):
         CONST_UNITS = 'Units'
@@ -318,7 +321,7 @@ class ExcelTimeseries(object):
 
         self._session.add_all(affiliations)
 
-        self.__flush()
+        self._flush()
 
     def parse_processing_level(self):
         with self._session.no_autoflush:
@@ -346,7 +349,7 @@ class ExcelTimeseries(object):
             # return processing_levels
             self._session.add_all(processing_levels)
 
-        self.__flush()
+        self._flush()
 
     def parse_sampling_feature(self):
         with self._session.no_autoflush:
@@ -387,7 +390,7 @@ class ExcelTimeseries(object):
 
                 self._session.add_all(sites)
 
-            self.__flush()
+            self._flush()
 
     def parse_spatial_reference(self):
         # with self._session.no_autoflush:
@@ -442,7 +445,7 @@ class ExcelTimeseries(object):
 
                     self.__updateGauge()
 
-        self.__flush()
+        self._flush()
 
     def parse_variables(self):
         with self._session.no_autoflush:
@@ -487,7 +490,7 @@ class ExcelTimeseries(object):
 
                     self.__updateGauge()
 
-        self.__flush()
+        self._flush()
 
     def is_valid(self, iterable):
         for element in iterable:
@@ -618,7 +621,7 @@ class ExcelTimeseries(object):
                     metadata[row[1].value] = my_meta
 
                     # self._session.add(measure_result_value)
-                    self.__flush()
+                    self._flush()
 
                     self.__updateGauge()
 

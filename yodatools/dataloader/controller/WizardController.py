@@ -1,3 +1,4 @@
+import os
 import threading
 
 from WizardDatabasePageController import WizardDatabasePageController
@@ -8,7 +9,7 @@ from WizardYodaPageController import WizardYodaPageController
 from WizardSQLitePageController import WizardSQLitePageController
 
 import wx
-from wx.lib.pubsub import pub
+# from wx.lib.pubsub import pub
 
 from yodatools.dataloader.view.WizardView import WizardView
 from odm2api.ODMconnection import dbconnection as dbc
@@ -50,7 +51,7 @@ class WizardController(WizardView):
         self.show_home_page()
         self.SetSize((450, 450))
 
-        pub.subscribe(self.handleError, 'wizardcontroller.error')
+        # pub.subscribe(self.handleError, 'wizardcontroller.error')
 
     def display_warning(self):
         """
@@ -90,10 +91,7 @@ class WizardController(WizardView):
         self.page_number = self.__go_to_next_available_page(forward=True)
         self.__check_if_on_page_before_summary()
 
-        try:
-            self.__update_page()
-        except AttributeError:
-            pass
+        self.__update_page()
 
     def __check_if_on_page_before_summary(self):
         self.is_on_page_before_summary = True
@@ -156,11 +154,8 @@ class WizardController(WizardView):
 
             input_file = self.home_page.input_file_text_ctrl.GetValue()
 
-            try:
-                self.execute(input_file, yoda_output_file_path=yoda_output_file_path, odm2_conn=odm2_conn,
-                             sqlite_conn=sqlite_conn)  # Parse and save
-            except Exception as e:
-                wx.MessageBox("Error:\n\n%s" % e.message, style=wx.ICON_ERROR)
+            self.execute(input_file, yoda_output_file_path=yoda_output_file_path, odm2_conn=odm2_conn,
+                         sqlite_conn=sqlite_conn)  # Parse and save
 
         elif self.is_on_page_before_summary:
             self.will_flip_to_page_before_summary()
