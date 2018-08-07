@@ -9,7 +9,11 @@ from WizardYodaPageController import WizardYodaPageController
 from WizardSQLitePageController import WizardSQLitePageController
 
 import wx
-# from wx.lib.pubsub import pub
+
+try:
+    from wx.lib.pubsub import pub
+except ImportError:
+    pass
 
 from yodatools.dataloader.view.WizardView import WizardView
 from odm2api.ODMconnection import dbconnection as dbc
@@ -51,7 +55,7 @@ class WizardController(WizardView):
         self.show_home_page()
         self.SetSize((450, 450))
 
-        # pub.subscribe(self.handleError, 'wizardcontroller.error')
+        pub.subscribe(self.handleError, 'wizardcontroller.error')
 
     def display_warning(self):
         """

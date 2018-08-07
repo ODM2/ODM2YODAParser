@@ -1,5 +1,5 @@
-from odm2api.models import Base
-from sqlalchemy.exc import IntegrityError
+from odm2api.models import Base, TimeSeriesResultValues
+from sqlalchemy.exc import IntegrityError, ProgrammingError
 import sqlalchemy.ext.declarative.api as api
 import pandas as pd
 from sqlalchemy import func
@@ -13,6 +13,8 @@ class iOutputs:
     def parseObjects(self, session):
         data = {}
 
+        schema = TimeSeriesResultValues.__table_args__['schema']
+
         for t in self.get_table_names():
 
             tmplist = []
@@ -20,18 +22,23 @@ class iOutputs:
                 if t.__tablename__.lower() == "timeseriesresultvalues":
                     # TODO: Test if this works for database connections to mssql and mysql
                     if 'postgresql' in session.bind.name:
-                        sql = """SELECT * FROM odm2.timeseriesresultvalues"""
+                        sql = """SELECT * FROM {}.timeseriesresultvalues""".format(schema)
                     elif 'mssql' in session.bind.name:
-                        sql = """SELECT * FROM ODM2.TimeSeriesResultValues"""
+                        sql = """SELECT * FROM {}.TimeSeriesResultValues""".format(schema)
                     else:
                         sql = """SELECT * FROM TimeSeriesResultValues"""
                     tbl = pd.read_sql(sql, session.connection().connection.connection)
                     tmplist = tbl
                 else:
 
-                    for obj in session.query(t).all():
-                        # session.expunge(o)
-                        tmplist.append(obj)
+                    try:
+                        for obj in session.query(t).all():
+                            # session.expunge(o)
+                            tmplist.append(obj)
+
+                    except ProgrammingError as e:
+
+                        print(e.message)
 
             except IntegrityError as e:
                 print(e)

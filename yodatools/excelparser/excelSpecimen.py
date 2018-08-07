@@ -5,6 +5,7 @@ from yodatools.converter.Abstract import iInputs
 import pandas
 import time
 import string
+import re
 from sqlalchemy.exc import IntegrityError
 
 from .ExcelParser import ExcelParser
@@ -41,11 +42,15 @@ class ExcelSpecimen(ExcelParser):
         The name range should contain the cells locations of the data.
         :rtype: list
         """
-        CONST_NAME = "_Table"
+
         table_name_range = {}
         for name_range in self.name_ranges:
-            name = name_range.name
-            if CONST_NAME in name:
+            name = name_range.name  # type: str
+
+            if '_table' in name.lower():
+                name = re.sub(r'_[tT]able', '', name)
+
+            if any(name.lower() in table_name.lower() for table_name in self.TABLE_NAMES):
                 sheet, dimensions = name_range.attr_text.split('!')
                 sheet = sheet.replace('\'', '')
 
@@ -81,9 +86,9 @@ class ExcelSpecimen(ExcelParser):
     def get_range_value(self, range_name, sheet):
         value = None
         named_range = self.workbook.get_named_range(range_name)
-        range = self.get_range_address(named_range)
-        if range:
-            value = sheet[range].value
+        range_ = self.get_range_address(named_range)
+        if range_:
+            value = sheet[range_].value
         return value
 
 
@@ -163,8 +168,8 @@ class ExcelSpecimen(ExcelParser):
             return
 
         for table in tables:
-            cells = sheet[self.get_range_address(table)]
-            for row in cells:
+            rows = sheet[self.get_range_address(table)]
+            for row in rows:
 
                 action = Actions()
                 feat_act = FeatureActions()
@@ -192,7 +197,12 @@ class ExcelSpecimen(ExcelParser):
                 feat_act.ActionObj = action
 
                 # Action By
-                first_name, last_name = row[8].value.split(' ')
+                try:
+                    last_name = row[8].value.split(' ')[-1]
+                except IndexError as e:
+                    print(e)
+                    last_name = row[8].value
+
                 person = self._session.query(People).filter_by(PersonLastName=last_name).first()
                 affiliations = self._session.query(Affiliations).filter_by(PersonID=person.PersonID).first()
                 act_by.AffiliationObj = affiliations
@@ -314,12 +324,9 @@ class ExcelSpecimen(ExcelParser):
                 session.add(org)
                 try:
                     session.commit()
-                except IntegrityError:
+                except IntegrityError as e:
+                    print(e)
                     session.rollback()
-
-                    q = self.session.query(Organizations).filter(Organizations.OrganizationCode == org.OrganizationCode)
-                    if q:
-                        org = session.merge(q.first())
 
 
                 organizations[org.OrganizationName] = org
@@ -364,28 +371,18 @@ class ExcelSpecimen(ExcelParser):
             else:
                 orgs = parse_organizations(table, self.session)
 
-
-        self.session.flush()
+        self._flush()
 
         for aff in affiliations:
             if aff.OrganizationObj.OrganizationName in orgs:
                 aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
 
         self.session.add_all(affiliations)
-        self.session.flush()
+        self._flush()
 
     def get_sheet_and_table(self, sheet_name):
-        # if sheet_name not in self.tables:
-        #     return [], []
-        # sheet = self.workbook.get_sheet_by_name(sheet_name)
-        # tables = self.tables[sheet_name]
         sheet = self.workbook.get_sheet_by_name(sheet_name)
-        if sheet_name not in self.tables:
-            tables = []
-        else:
-            tables = self.tables[sheet_name]
-
-        return sheet, tables
+        return sheet, self.tables.get(sheet_name, [])
 
     def parse_processing_level(self):
         CONST_PROC_LEVEL = 'Processing Levels'
@@ -395,7 +392,7 @@ class ExcelSpecimen(ExcelParser):
             print "No processing levels found"
             return []
 
-        processing_levels = []
+        # processing_levels = []
         for table in tables:
             cells = sheet[self.get_range_address(table)]
 
@@ -411,18 +408,13 @@ class ExcelSpecimen(ExcelParser):
                 except IntegrityError:
                     self.session.rollback()
 
-                    q = self.session.query(ProcessingLevels)\
-                            .filter(ProcessingLevels.ProcessingLevelCode == proc_lvl.ProcessingLevelCode)
-                    if q:
-                        proc_lvl = self.session.merge(q.first())
-
-                processing_levels.append(proc_lvl)
+                # processing_levels.append(proc_lvl)
 
                 self.__updateGauge()
 
         # return processing_levels
-        self.session.add_all(processing_levels)
-        self.session.flush()
+        # self.session.add_all(processing_levels)
+        # self.session.flush()
 
     def parse_sampling_feature(self):
         SHEET_NAME = 'Sampling Features'
@@ -454,7 +446,7 @@ class ExcelSpecimen(ExcelParser):
         spatial_references = self.parse_spatial_reference()
 
         sites = []
-        cells = sheet[self.get_range_address(sites_table)]
+        rows = sheet[self.get_range_address(sites_table)]
 
 
         elevation_datum = sheet[self.get_range_address(elevation_datum_range)].value
@@ -463,7 +455,7 @@ class ExcelSpecimen(ExcelParser):
         # spatial_ref_name = sites_datum['latlon_datum_cv']
         spatial_references_obj = spatial_references[spatial_ref_name]
 
-        for row in cells:
+        for row in rows:
             site = Sites()
             site.SamplingFeatureUUID = row[0].value
             site.SamplingFeatureCode = row[1].value
@@ -525,51 +517,65 @@ class ExcelSpecimen(ExcelParser):
             print "No specimens found"
             return []
 
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+        with self.session.no_autoflush:
+            for table in tables:
+                rows = sheet[self.get_range_address(table)]
 
-            for row in cells:
-                specimen = Specimens()
-                action = Actions()
-                related_feature = RelatedFeatures()
-                feature_action = FeatureActions()
+                for row in rows:
+                    specimen = Specimens()
+                    action = Actions()
+                    related_feature = RelatedFeatures()
+                    feature_action = FeatureActions()
 
-                # First the Specimen/Sampling Feature
-                specimen.SamplingFeatureUUID = row[0].value
-                specimen.SamplingFeatureCode = row[1].value
-                specimen.SamplingFeatureName = row[2].value
-                specimen.SamplingFeatureDescription = row[3].value
-                specimen.SamplingFeatureTypeCV = "Specimen"
-                specimen.SpecimenMediumCV = row[5].value
-                specimen.IsFieldSpecimen = row[6].value
-                specimen.ElevationDatumCV = 'Unknown'
-                specimen.SpecimenTypeCV = row[4].value
-                specimen.SpecimenMediumCV = 'Liquid aqueous'
+                    # First the Specimen/Sampling Feature
+                    specimen.SamplingFeatureUUID = row[0].value
+                    specimen.SamplingFeatureCode = row[1].value
+                    specimen.SamplingFeatureName = row[2].value
+                    specimen.SamplingFeatureDescription = row[3].value
+                    specimen.SamplingFeatureTypeCV = "Specimen"
+                    specimen.SpecimenMediumCV = row[5].value
+                    specimen.IsFieldSpecimen = row[6].value
+                    specimen.ElevationDatumCV = 'Unknown'
+                    specimen.SpecimenTypeCV = row[4].value
+                    specimen.SpecimenMediumCV = 'Liquid aqueous'
 
-                # Related Features
-                related_feature.RelationshipTypeCV = 'Was Collected at'
-                sampling_feature = self._session.query(SamplingFeatures).filter_by(SamplingFeatureCode=row[7].value).first()
-                related_feature.SamplingFeatureObj = specimen
-                related_feature.RelatedFeatureObj = sampling_feature
+                    # Related Features
+                    related_feature.RelationshipTypeCV = 'Was Collected at'
 
-                # Last is the Action/SampleCollectionAction
-                action.ActionTypeCV = 'Specimen collection'
-                action.BeginDateTime = row[8].value
-                action.BeginDateTimeUTCOffset = row[9].value
-                method = self._session.query(Methods).filter_by(MethodCode=row[10].value).first()
-                action.MethodObj = method
+                    try:
+                        sampling_feature = self._session.query(SamplingFeatures).filter_by(SamplingFeatureCode=row[7].value).first()
+                    except IntegrityError as e:
+                        print(e)
+                        continue
 
-                feature_action.ActionObj = action
-                feature_action.SamplingFeatureObj = specimen
+                    related_feature.SamplingFeatureObj = specimen
+                    related_feature.RelatedFeatureObj = sampling_feature
 
-                self._session.add(specimen)
-                self._session.add(action)
-                self._session.add(related_feature)
-                self._session.add(feature_action)
+                    # Last is the Action/SampleCollectionAction
+                    action.ActionTypeCV = 'Specimen collection'
+                    action.BeginDateTime = row[8].value
+                    action.BeginDateTimeUTCOffset = row[9].value
+                    method = self._session.query(Methods).filter_by(MethodCode=row[10].value).first()
+                    action.MethodObj = method
 
-                self.__updateGauge()
+                    feature_action.ActionObj = action
+                    feature_action.SamplingFeatureObj = specimen
 
-        self._session.flush()  # Need to set the RelatedFeature.RelatedFeatureID before flush will work
+                    self._session.add(specimen)
+                    self._session.add(action)
+                    self._session.add(related_feature)
+                    self._session.add(feature_action)
+
+                    try:
+                        self.session.commit()
+                    except IntegrityError as e:
+                        print(e)
+                        session.rollback()
+
+                    self.__updateGauge()
+
+        # self._session.flush()  # Need to set the RelatedFeature.RelatedFeatureID before flush will work
+        self._flush()
 
     def parse_methods(self):
         CONST_METHODS = "Methods"
@@ -582,9 +588,9 @@ class ExcelSpecimen(ExcelParser):
                 return []
 
             for table in tables:
-                cells = sheet[self.get_range_address(table)]
+                rows = sheet[self.get_range_address(table)]
 
-                for row in cells:
+                for row in rows:
                     method = Methods()
                     method.MethodTypeCV = row[0].value
                     method.MethodCode = row[1].value
