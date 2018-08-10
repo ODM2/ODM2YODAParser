@@ -32,7 +32,6 @@ from odm2api.models import \
 import time
 import string
 
-import xlrd
 import pandas as pd
 
 from .ExcelParser import ExcelParser
@@ -109,13 +108,18 @@ class ExcelTimeseries(ExcelParser):
     def get_range_value(self, range_name, sheet):
         value = None
         named_range = self.workbook.get_named_range(range_name)
-        range = self.get_range_address(named_range)
-        if range:
-            value = sheet[range].value
+        range_ = self.get_range_address(named_range)
+        if range_:
+            value = sheet[range_].value
         return value
 
     def _init_data(self, file_path):
         self.workbook = openpyxl.load_workbook(file_path, read_only=True)
+
+        for ws in self.workbook.worksheets:
+            for table in getattr(ws, '_tables', []):
+                print(table.name)
+
         self.name_ranges = self.workbook.get_named_ranges()
         self.sheets = self.workbook.get_sheet_names()
 
@@ -128,19 +132,6 @@ class ExcelTimeseries(ExcelParser):
         top = int(top.translate(all_, nodigs))
         bottom = int(bottom.translate(all_, nodigs))
         self.total_rows_to_read += (bottom - top)
-
-
-    def __updateGauge(self):
-        # Objects are passed by reference in Python :)
-        if not self.gauge:
-            return  # No gauge was passed in, but that's ok :)
-
-        self.rows_read += 1.
-        try:
-            value = self.rows_read / self.total_rows_to_read * 100.0
-            self.gauge.SetValue(value)
-        except ZeroDivisionError:
-            pass
 
     def get_sheet_and_table(self, sheet_name):
         if sheet_name not in self.tables:
@@ -207,7 +198,7 @@ class ExcelTimeseries(ExcelParser):
                     authors.append(author)
                     author_order += 1
 
-                    self.__updateGauge()
+                    self._updateGauge()
 
         self._session.add_all(authors)
 
@@ -245,7 +236,7 @@ class ExcelTimeseries(ExcelParser):
                 if unit.UnitsTypeCV is not None:
                     units.append(unit)
 
-                self.__updateGauge()
+                self._updateGauge()
 
         self._session.add_all(units)
         self._session.flush()
@@ -271,7 +262,7 @@ class ExcelTimeseries(ExcelParser):
                 org.OrganizationLink = row[4].value
                 session.add(org)
                 organizations[org.OrganizationName] = org
-                self.__updateGauge()
+                self._updateGauge()
 
             return organizations
 
@@ -344,7 +335,7 @@ class ExcelTimeseries(ExcelParser):
                         proc_lvl.Explanation = row[2].value
                         processing_levels.append(proc_lvl)
 
-                    self.__updateGauge()
+                    self._updateGauge()
 
             # return processing_levels
             self._session.add_all(processing_levels)
@@ -386,7 +377,7 @@ class ExcelTimeseries(ExcelParser):
                     site.SpatialReferenceObj = spatial_references_obj
 
                     sites.append(site)
-                    self.__updateGauge()
+                    self._updateGauge()
 
                 self._session.add_all(sites)
 
@@ -443,7 +434,7 @@ class ExcelTimeseries(ExcelParser):
                     if method.MethodCode:  # Cannot store empty/None objects
                         self._session.add(method)
 
-                    self.__updateGauge()
+                    self._updateGauge()
 
         self._flush()
 
@@ -488,7 +479,7 @@ class ExcelTimeseries(ExcelParser):
                     if var.NoDataValue is not None:  # NoDataValue cannot be None
                         self._session.add(var)
 
-                    self.__updateGauge()
+                    self._updateGauge()
 
         self._flush()
 
@@ -623,7 +614,7 @@ class ExcelTimeseries(ExcelParser):
                     # self._session.add(measure_result_value)
                     self._flush()
 
-                    self.__updateGauge()
+                    self._updateGauge()
 
         print "convert from cross tab to serial"
         return self.load_time_series_values(data_values, metadata)

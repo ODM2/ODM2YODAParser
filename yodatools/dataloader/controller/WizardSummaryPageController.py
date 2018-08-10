@@ -7,11 +7,6 @@ from yodatools.dataloader.view.WizardSummaryPageView import WizardSummaryPageVie
 import wx
 import os
 
-try:
-    from wx.lib.pubsub import pub
-except ImportError:
-    pass
-
 
 class WizardSummaryPageController(WizardSummaryPageView):
 
@@ -22,17 +17,15 @@ class WizardSummaryPageController(WizardSummaryPageView):
 
     def run(self, *args):
 
-        debug = os.getenv('DEBUG', 'false')
-
         try:
             self.__run(*args)
 
         except Exception as e:
-            pub.sendMessage('wizardcontroller.error', message=e.message)
-            # wx.MessageBox(e.message, style=wx.ICON_ERROR)
 
-            if debug == 'true':
+            if os.getenv('DEBUG', 'false') == 'true':
                 raise
+            else:
+                wx.MessageBox(e.message, style=wx.ICON_ERROR)
 
     def __run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
 

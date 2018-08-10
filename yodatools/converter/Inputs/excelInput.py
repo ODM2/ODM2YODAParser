@@ -19,7 +19,6 @@ class ExcelInput(iInputs):
     def session(self):
         return self._session
 
-#     def parse(self, file_path=None):
     def parse(self, file_path):
         """
         If any of the methods return early, then check that they have the table ranges

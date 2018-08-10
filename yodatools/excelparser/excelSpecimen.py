@@ -1,8 +1,15 @@
 import os
 import openpyxl
+from openpyxl.worksheet.table import Table
+from openpyxl.cell.cell import Cell
+from openpyxl.workbook.workbook import Workbook
+from uuid import uuid4
+
 from odm2api.models import *
 from yodatools.converter.Abstract import iInputs
-import pandas
+from pandas import DataFrame
+import pandas as pd
+import numpy as np
 import time
 import string
 import re
@@ -26,9 +33,11 @@ class ExcelSpecimen(ExcelParser):
 
         self.workbook = None
         self.sheets = []
-        self.name_ranges = None
+        self.name_ranges = {}
         self.tables = {}
         self._init_data(input_file)
+
+        self._orgs = {}
 
     @property
     def session(self):
@@ -64,7 +73,46 @@ class ExcelSpecimen(ExcelParser):
         return table_name_range
 
     def _init_data(self, file_path):
+        self.workbook = openpyxl.load_workbook(file_path, data_only=True)  # type: Workbook
+
+        # Loop through worksheets to grab table data
+        for ws in self.workbook.worksheets:
+
+            try:
+                tables = getattr(ws, '_tables', [])
+            except IndexError:
+                continue
+
+            for table in tables:  # type: Table
+
+                rows = ws[table.ref]
+
+                if table.name == 'DatasetInformation':
+                    # The DatasetInformation table does not have
+                    # headers so it must be handled differently
+                    df = DataFrame([[cell.value for cell in row] for row in rows])
+
+                    headers = df[0].tolist()  # Headers are in the first column
+                    data = [df[1].tolist(), ]  # data values are in the second column
+
+                else:
+
+                    # check if table_rows length is less than 2, since the first row is just the table headers
+                    if len(rows) < 2:
+                        continue
+
+                    headers = [cell.value for cell in rows[0]]  # get headers from the first row
+                    data = [[cell.value for cell in row] for row in rows[1:]]  # get values from 2...n rows
+
+                headers = map(lambda x: x.strip(), headers)  # remove leading/trailing whitespaces from headers...
+
+                self.tables[table.name.strip()] = DataFrame(data, columns=headers).dropna(how='all')
+
+        self.workbook.close()
+
+        # TODO: If this whole table nonsense works out... don't think we'll need this stuff.
         self.workbook = openpyxl.load_workbook(file_path, read_only=True)
+
         self.name_ranges = self.workbook.get_named_ranges()
         self.sheets = self.workbook.get_sheet_names()
 
@@ -103,19 +151,17 @@ class ExcelSpecimen(ExcelParser):
         self._session = session_factory.getSession()
         self._engine = session_factory.engine
 
-        self.tables = self.get_table_name_ranges()
+        # self.tables = self.get_table_name_ranges()
 
         start = time.time()
 
-
-        self.parse_affiliations()
+        self.parse_people_and_orgs_sheet()
         self.parse_datasets()
         self.parse_methods()
         self.parse_variables()
         self.parse_units()
         self.parse_processing_level()
         self.parse_sampling_feature()
-        self.parse_sites()
         self.parse_specimens()
         self.parse_analysis_results()
 
@@ -126,38 +172,31 @@ class ExcelSpecimen(ExcelParser):
 
         return True
 
-    def __updateGauge(self):
-        # Objects are passed by reference in Python :)
-        if not self.gauge:  # type: wx.Gauge
-            return  # No gauge was passed in, but that's ok :)
-
-        self.rows_read += 1
-        try:
-            value = (float(self.rows_read) / self.total_rows_to_read * 100.0) / 2.
-
-            if value >= self.gauge.GetValue():
-                self.gauge.SetValue(value)
-
-        except ZeroDivisionError:
-            pass
-
     def parse_datasets(self):
 
-        CONST_DATASET = 'Dataset Citation'
+        dataset_table = self.tables.get('DatasetInformation')
 
-        sheet, tables = self.get_sheet_and_table(CONST_DATASET)
+        for _, row in dataset_table.iterrows():
 
-        dataset = DataSets()
-        dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
-        dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
-        dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
-        dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
-        dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
-        self._session.add(dataset)
+            params = {
+                'DataSetUUID': row.get('Dataset UUID'),
+                'DataSetTypeCV': row.get('Dataset Type [CV]'),
+                'DataSetCode': row.get('Dataset Code'),
+                'DataSetTitle': row.get('Dataset Title'),
+                'DataSetAbstract': row.get('Dataset Abstract')
+            }
 
-        self._flush()
+            self.data_set = self.get_or_create(DataSets, params, filter_by='DataSetUUID')
 
-        self.data_set = dataset
+        # dataset = DataSets()
+        # dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
+        # dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
+        # dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
+        # dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
+        # dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
+        # self._session.add(dataset)
+        #
+        # self._flush()
 
     def parse_analysis_results(self):
         SHEET_NAME = "Analysis_Results"
@@ -268,225 +307,123 @@ class ExcelSpecimen(ExcelParser):
 
                 self._flush()
 
-                self.__updateGauge()
+                self._updateGauge()
 
-    def parse_sites(self):
-        return self.parse_sampling_feature()
+    # def parse_sites(self):
+    #     return self.parse_sampling_feature()
 
     def parse_units(self):
-        CONST_UNITS = 'Units'
+        table = self.tables.get('Units', DataFrame())
+        for _, row in table.iterrows():
 
-        sheet, tables = self.get_sheet_and_table(CONST_UNITS)
+            params = {
+                'UnitsTypeCV': row.get('Units Type [CV]'),
+                'UnitsAbbreviation': row.get('Units Abbreviation'),
+                'UnitsName': row.get('Units Name'),
+                'UnitsLink': row.get('Units Link')
+            }
 
-        if not len(tables):
-            print "No Units found"
-            return
+            _ = self.get_or_create(Units, params, filter_by=['UnitsName', 'UnitsAbbreviation', 'UnitsTypeCV'],
+                                   check_fields=['UnitsTypeCV'])
 
-        units = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+            self._updateGauge()
 
-            for row in cells:
-                unit = Units()
-                unit.UnitsTypeCV = row[0].value
-                unit.UnitsAbbreviation = row[1].value
-                unit.UnitsName = row[2].value
-                unit.UnitsLink = row[3].value
+    def parse_people_and_orgs_sheet(self):
 
-                if unit.UnitsTypeCV is not None:
-                    units.append(unit)
+        # Create Organization objects
+        organization_table = self.tables.get('Organizations', DataFrame())
+        for _, row in organization_table.iterrows():
+            params = {
+                'OrganizationTypeCV': row.get('Organization Type [CV]'),
+                'OrganizationCode': row.get('Organization Code'),
+                'OrganizationName': row.get('Organization Name'),
+                'OrganizationDescription': row.get('Organization Description'),
+                'OrganizationLink': row.get('Organization Link'),
+            }
 
-                self.__updateGauge()
-
-        self._session.add_all(units)
-        self._session.flush()
-
-    def parse_affiliations(self):  # rename to Affiliations
-        SHEET_NAME = 'People and Organizations'
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
-
-        if not len(tables):
-            print "No affiliations found"
-            return []
-
-        def parse_organizations(org_table, session):
-            organizations = {}
-
-            cells = sheet[self.get_range_address(org_table)]
-            for row in cells:
-                org = Organizations()
-                org.OrganizationTypeCV = row[0].value
-                org.OrganizationCode = row[1].value
-                org.OrganizationName = row[2].value
-                org.OrganizationDescription = row[3].value
-                org.OrganizationLink = row[4].value
-
-                session.add(org)
-                try:
-                    session.commit()
-                except IntegrityError as e:
-                    print(e)
-                    session.rollback()
+            org = self.get_or_create(Organizations, params, filter_by='OrganizationName')
+            self._orgs[row.get('Organization Name')] = org  # save this for later when we create Affiliations
 
 
-                organizations[org.OrganizationName] = org
-                self.__updateGauge()
+        # Create Person and Affiliation objects
+        people_table = self.tables.get('People', DataFrame())
+        for _, row in people_table.iterrows():  # type: (any, DataFrame)
 
-            return organizations
+            row.fillna(value='', inplace=True)  # replace NaN values with empty string
 
-        def parse_authors(author_table):
-            authors = []
-            cells = sheet[self.get_range_address(author_table)]
-            #TODO check if required people have value
-            for row in cells:
-                ppl = People()
-                org = Organizations()
-                aff = Affiliations()
+            person_params = {
+                'PersonFirstName': row.get('First Name'),
+                'PersonLastName': row.get('Last Name'),
+                'PersonMiddleName': row.get('Middle Name')
+            }
 
-                ppl.PersonFirstName = row[0].value.strip() if row[0].value else ""
-                ppl.PersonMiddleName = row[1].value.strip() if row[1].value else ""
-                ppl.PersonLastName = row[2].value.strip() if row[2].value else ""
+            person = self.get_or_create(People, person_params)
 
-                org.OrganizationName = row[3].value
-                aff.AffiliationStartDate = row[5].value
-                aff.AffiliationEndDate = row[6].value
-                aff.PrimaryPhone = row[7].value
-                aff.PrimaryEmail = row[8].value
-                aff.PrimaryAddress = row[9].value
-                aff.PersonLink = row[10].value
+            aff_params = {
+                'AffiliationStartDate': row.get('Affiliation Start Date'),
+                'AffiliationEndDate': row.get('Affiliation End Date'),
+                'PrimaryPhone': row.get('Primary Phone'),
+                'PrimaryEmail': row.get('Primary Email'),
+                'PrimaryAddress': row.get('Primary Address'),
+                'PersonLink': row.get('Person Link'),
+                'OrganizationObj': self._orgs.get(row.get('Organization Name')),
+                'PersonObj': person
+            }
 
-                aff.OrganizationObj = org
-                aff.PersonObj = ppl
-
-                authors.append(aff)
-            return authors
-
-        # Combine table and authors
-
-        orgs = {}
-        affiliations = []
-        for table in tables:
-            if 'People_Table' == table.name:
-                affiliations = parse_authors(table)
-            else:
-                orgs = parse_organizations(table, self.session)
-
-        self._flush()
-
-        for aff in affiliations:
-            if aff.OrganizationObj.OrganizationName in orgs:
-                aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
-
-        self.session.add_all(affiliations)
-        self._flush()
+            _ = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
 
     def get_sheet_and_table(self, sheet_name):
         sheet = self.workbook.get_sheet_by_name(sheet_name)
         return sheet, self.tables.get(sheet_name, [])
 
     def parse_processing_level(self):
-        CONST_PROC_LEVEL = 'Processing Levels'
-        sheet, tables = self.get_sheet_and_table(CONST_PROC_LEVEL)
 
-        if not len(tables):
-            print "No processing levels found"
-            return []
+        table = self.tables.get('ProcessingLevels', DataFrame())
+        for _, row in table.iterrows():
 
-        # processing_levels = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+            params = {
+                'ProcessingLevelCode': row.get('Processing Level Code'),
+                'Definition': row.get('Definition'),
+                'Explanation': row.get('Explanation')
+            }
 
-            for row in cells:
-                proc_lvl = ProcessingLevels()
-                proc_lvl.ProcessingLevelCode = row[0].value
-                proc_lvl.Definition = row[1].value
-                proc_lvl.Explanation = row[2].value
+            _ = self.get_or_create(ProcessingLevels, params, filter_by=['ProcessingLevelCode'])
 
-                self.session.add(proc_lvl)
-                try:
-                    self.session.commit()
-                except IntegrityError:
-                    self.session.rollback()
-
-                # processing_levels.append(proc_lvl)
-
-                self.__updateGauge()
-
-        # return processing_levels
-        # self.session.add_all(processing_levels)
-        # self.session.flush()
+            self._updateGauge()
 
     def parse_sampling_feature(self):
-        SHEET_NAME = 'Sampling Features'
 
-        if SHEET_NAME not in self.tables:
-            if 'Sites' in self.tables:
-                SHEET_NAME = 'Sites'
-            else:
-                print "No sampling features/sites found"
-                return []
+        elevation_datum_range = self.workbook.defined_names['ElevationDatum'].destinations
+        elevation_datum = self.get_named_range_value(*next(elevation_datum_range))
 
-        sheet = self.workbook.get_sheet_by_name(SHEET_NAME)
-        tables = self.tables[SHEET_NAME]
+        latlon_datum_range = self.workbook.defined_names['LatLonDatum'].destinations
+        latlon_datum = self.get_named_range_value(*next(latlon_datum_range))
 
-        sites_table = tables[0] if tables[0].name == 'Sites_Table' else None
-        elevation_datum_range = self.workbook.get_named_range("ElevationDatum")
-        spatial_ref_name_range = self.workbook.get_named_range("LatLonDatum")
+        # TODO: The SpatialReferences table does not exist in current excel templates... seek guidance young one.
+        # Currently the fix is to get/create a new record using latlon_datum as the SRS code and name...
+        spatial_ref = self.get_or_create(SpatialReferences, {'SRSCode': latlon_datum, 'SRSName': latlon_datum})
 
-        # spatial_ref_table = tables[0] if tables[0].name == 'SitesDatumCV_Table' else tables[1]
+        table = self.tables.get('Sites', DataFrame())
+        for _, row in table.iterrows():
 
-        # def parse_sites_datum_cv(sheet, spatial_reference_table):
-        #     result = {}
-        #     cells = sheet[spatial_reference_table.attr_text.split('!')[1].replace('$', '')]
-        #     result['elevation_datum_cv'] = cells[0][1].value
-        #     result['latlon_datum_cv'] = cells[1][1].value
-        #     return result
+            params = {
+                'SamplingFeatureUUID': str(uuid4()),  # Adding UUID in excel templates is redundant
+                'SamplingFeatureCode': row.get('Sampling Feature Code'),
+                'SamplingFeatureName': row.get('Sampling Feature Name'),
+                'SamplingFeatureDescription': row.get('Sampling Feature Description'),
+                'FeatureGeometryWKT': row.get('Feature Geometry WKT'),
+                'Elevation_m': row.get('Elevation_m'),
+                'SamplingFeatureTypeCV': 'Site',
+                'SiteTypeCV': row.get('Site Type [CV]'),
+                'Latitude': row.get('Latitude'),
+                'Longitude': row.get('Longitude'),
+                'ElevationDatumCV': elevation_datum,
+                'SpatialReferenceObj': spatial_ref
+            }
 
-        # sites_datum = parse_sites_datum_cv(sheet, spatial_ref_table)
-        spatial_references = self.parse_spatial_reference()
+            _ = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'])
 
-        sites = []
-        rows = sheet[self.get_range_address(sites_table)]
-
-
-        elevation_datum = sheet[self.get_range_address(elevation_datum_range)].value
-        # elevation_datum = sites_datum['elevation_datum_cv']
-        spatial_ref_name = sheet[self.get_range_address(spatial_ref_name_range)].value.encode('utf-8')
-        # spatial_ref_name = sites_datum['latlon_datum_cv']
-        spatial_references_obj = spatial_references[spatial_ref_name]
-
-        for row in rows:
-            site = Sites()
-            site.SamplingFeatureUUID = row[0].value
-            site.SamplingFeatureCode = row[1].value
-            site.SamplingFeatureName = row[2].value
-            site.SamplingFeatureDescription = row[3].value
-            site.FeatureGeometryWKT = row[4].value
-            site.Elevation_m = row[5].value
-            site.SamplingFeatureTypeCV = "Site"
-            site.SiteTypeCV = row[6].value
-            site.Latitude = row[7].value
-            site.Longitude = row[8].value
-            site.ElevationDatumCV = elevation_datum
-            site.SpatialReferenceObj = spatial_references_obj
-
-            # sites.append(site)
-
-            self.session.add(site)
-
-            try:
-                self.session.commit()
-            except IntegrityError as e:
-                print(e)
-
-                self.session.rollback()
-
-                # q = self.session.query(Sites).filter(Sites.SamplingFeatureCode == site.SamplingFeatureCode)
-                # if q:
-                #     old_site = q.first()
-                #     _ = self.session.merge(old_site)
-
-            self.__updateGauge()
+        self._updateGauge()
 
     def parse_spatial_reference(self):
         SHEET_NAME = "SpatialReferences"
@@ -572,80 +509,67 @@ class ExcelSpecimen(ExcelParser):
                         print(e)
                         session.rollback()
 
-                    self.__updateGauge()
+                    self._updateGauge()
 
         # self._session.flush()  # Need to set the RelatedFeature.RelatedFeatureID before flush will work
         self._flush()
 
     def parse_methods(self):
-        CONST_METHODS = "Methods"
-        sheet, tables = self.get_sheet_and_table(CONST_METHODS)
+        """
+        Parse methods recorded in the excel template
 
-        with self.session.no_autoflush:
+        NOTE: When parsing SpecimenTimeSeries templates, there are two
+        seperate tables - the SpecimenCollectionMethods table, and the
+        SpecimenAnalysisMethods table. `parse_methods()` parses both
+        of tables.
+        :return:
+        """
 
-            if not len(tables):
-                print "No methods found"
-                return []
+        def parse_method(row):
+            params = {
+                'MethodTypeCV': row.get('Method Type [CV]'),
+                'MethodCode': row.get('Method Code'),
+                'MethodName': row.get('Method Name'),
+                'MethodDescription': row.get('Method Description'),
+                'OrganizationObj': self._orgs.get(row.get('Organization Name'))
+            }
 
-            for table in tables:
-                rows = sheet[self.get_range_address(table)]
+            # check if params has all required fields, if not, then raise assertion error
+            assert(all(params.values()))
 
-                for row in rows:
-                    method = Methods()
-                    method.MethodTypeCV = row[0].value
-                    method.MethodCode = row[1].value
-                    method.MethodName = row[2].value
-                    method.MethodDescription = row[3].value
-                    method.MethodLink = row[4].value
+            # After checking for required fields, add the non required field
+            params.update(MethodLink=row.get('Method Link'))
 
-                    # If organization does not exist then it returns None
-                    org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
-                    method.OrganizationObj = org
+            _ = self.get_or_create(Methods, params, filter_by='MethodCode')
 
-                    if method.MethodCode:  # Cannot store empty/None objects
-                        self._session.add(method)
+        collections_method_table = self.tables.get('SpecimenCollectionMethods')
+        analysis_methods_table = self.tables.get('SpecimenAnalysisMethods')
 
-                    self.__updateGauge()
+        methods_table = collections_method_table.append(analysis_methods_table)  # type: DataFrame
 
-        self._flush()
+        # drop rows where *all* values in the row are NaN
+
+
+        for _, row in methods_table.iterrows():
+            try:
+                parse_method(row)
+            except AssertionError:
+                continue
+            self._updateGauge()
+
 
     def parse_variables(self):
 
-        CONST_VARIABLES = "Variables"
+        table = self.tables.get('Variables', DataFrame())
+        for _, row in table.iterrows():
 
-        if CONST_VARIABLES not in self.tables:
-            print "No Variables found"
-            return []
+            params = {
+                'VariableTypeCV': row.get('Variable Type [CV]'),
+                'VariableCode': row.get('Variable Code'),
+                'VariableNameCV': row.get('Variable Name [CV]'),
+                'VariableDefinition': row.get('Variable Definition'),
+                'SpeciationCV': row.get('Speciation [CV]'),
+                'NoDataValue': row.get('No Data Value')
+            }
 
-        sheet = self.workbook.get_sheet_by_name(CONST_VARIABLES)
-        tables = self.tables[CONST_VARIABLES]
-
-        with self.session.no_autoflush:
-
-            for table in tables:
-                cells = sheet[self.get_range_address(table)]
-                for row in cells:
-                    var = Variables()
-                    var.VariableTypeCV = row[0].value
-                    var.VariableCode = row[1].value
-                    var.VariableNameCV = row[2].value
-                    var.VariableDefinition = row[3].value
-                    var.SpeciationCV = row[4].value
-
-                    if row[5].value is not None:
-                        if row[5].value == 'NULL':
-                            #TODO break somehow because not all required data is not filled out
-                            print "All Variables must contain a valid No Data Value!"
-                            var.NoDataValue = None
-                        else:
-                            var.NoDataValue = row[5].value
-
-                    if var.NoDataValue is not None:  # NoDataValue cannot be None
-                        self._session.add(var)
-
-                    self.__updateGauge()
-
-        self._flush()
-
-
-
+            _ = self.get_or_create(Variables, params, filter_by=['VariableCode'], check_fields=['NoDataValue'])
