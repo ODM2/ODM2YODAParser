@@ -40,30 +40,16 @@ from .ExcelParser import ExcelParser
 class ExcelTimeseries(ExcelParser):
 
     # https://automatetheboringstuff.com/chapter12/
-    def __init__(self, input_file, **kwargs):
-        super(ExcelTimeseries, self).__init__()
-
-        self.input_file = input_file
-        self.gauge = kwargs.get('gauge', None)
-        self.total_rows_to_read = 0
-        self.rows_read = 0.
-
-        self.workbook = None
-        self.sheets = []
-        self.name_ranges = None
-        self.tables = {}
-        self._init_data(input_file)
+    def __init__(self, input_file, session_factory, **kwargs):
+        super(ExcelTimeseries, self).__init__(input_file, session_factory, **kwargs)
 
     def _flush(self):
         try:
-            self._session.flush()
+            self.session.flush()
         except IntegrityError:
-            self._session.rollback()
+            self.session.rollback()
 
-    def parse(self, session_factory):
-
-        self._session = session_factory.getSession()
-        self._engine = session_factory.engine
+    def parse(self):
 
         self.tables = self.get_table_name_ranges()
 
@@ -154,7 +140,7 @@ class ExcelTimeseries(ExcelParser):
         dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
         dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
         dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
-        self._session.add(dataset)
+        self.session.add(dataset)
 
         self._flush()
 
@@ -168,7 +154,7 @@ class ExcelTimeseries(ExcelParser):
         citation.PublicationYear = self.get_range_value("PublicationYear", sheet)
         citation.CitationLink = self.get_range_value("CitationLink", sheet)
         # citation.DOI
-        self._session.add(citation)
+        self.session.add(citation)
 
         self._flush()
 
@@ -188,7 +174,7 @@ class ExcelTimeseries(ExcelParser):
                     else:
                         last_name = names[1].strip()
                     first_name = names[0].strip()
-                    person = self._session.query(People).filter_by(PersonLastName=last_name,
+                    person = self.session.query(People).filter_by(PersonLastName=last_name,
                                                                    PersonFirstName=first_name).first()
 
                     author = AuthorLists()
@@ -200,7 +186,7 @@ class ExcelTimeseries(ExcelParser):
 
                     self._updateGauge()
 
-        self._session.add_all(authors)
+        self.session.add_all(authors)
 
         self._flush()
 
@@ -226,7 +212,7 @@ class ExcelTimeseries(ExcelParser):
 
                 # Finding the right CVUnitsType object only seems to be a problem with postgresql...
                 if self._engine.name == 'postgresql':
-                    unitstypecv = self._session.query(CVUnitsType)\
+                    unitstypecv = self.session.query(CVUnitsType)\
                         .filter(func.lower(CVUnitsType.Name) == func.lower(unit.UnitsTypeCV))\
                         .first()
 
@@ -238,8 +224,8 @@ class ExcelTimeseries(ExcelParser):
 
                 self._updateGauge()
 
-        self._session.add_all(units)
-        self._session.flush()
+        self.session.add_all(units)
+        self.session.flush()
 
     def parse_affiliations(self):  # rename to Affiliations
         SHEET_NAME = 'People and Organizations'
@@ -304,18 +290,18 @@ class ExcelTimeseries(ExcelParser):
             else:
                 orgs = parse_organizations(table, self._session)
 
-        # self._session.flush()
+        # self.session.flush()
 
         for aff in affiliations:
             if aff.OrganizationObj.OrganizationName in orgs:
                 aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
 
-        self._session.add_all(affiliations)
+        self.session.add_all(affiliations)
 
         self._flush()
 
     def parse_processing_level(self):
-        with self._session.no_autoflush:
+        with self.session.no_autoflush:
             CONST_PROC_LEVEL = 'Processing Levels'
             sheet, tables = self.get_sheet_and_table(CONST_PROC_LEVEL)
 
@@ -338,12 +324,12 @@ class ExcelTimeseries(ExcelParser):
                     self._updateGauge()
 
             # return processing_levels
-            self._session.add_all(processing_levels)
+            self.session.add_all(processing_levels)
 
         self._flush()
 
     def parse_sampling_feature(self):
-        with self._session.no_autoflush:
+        with self.session.no_autoflush:
             SHEET_NAME = 'Sampling Features'
             sheet, tables = self.get_sheet_and_table(SHEET_NAME)
 
@@ -379,12 +365,12 @@ class ExcelTimeseries(ExcelParser):
                     sites.append(site)
                     self._updateGauge()
 
-                self._session.add_all(sites)
+                self.session.add_all(sites)
 
             self._flush()
 
     def parse_spatial_reference(self):
-        # with self._session.no_autoflush:
+        # with self.session.no_autoflush:
         SHEET_NAME = "SpatialReferences"
         sheet, tables = self.get_sheet_and_table(SHEET_NAME)
 
@@ -407,7 +393,7 @@ class ExcelTimeseries(ExcelParser):
 
     def parse_methods(self):
 
-        with self._session.no_autoflush:
+        with self.session.no_autoflush:
 
             CONST_METHODS = "Methods"
             sheet, tables = self.get_sheet_and_table(CONST_METHODS)
@@ -428,18 +414,18 @@ class ExcelTimeseries(ExcelParser):
                     method.MethodLink = row[4].value
 
                     # If organization does not exist then it returns None
-                    org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
+                    org = self.session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
                     method.OrganizationObj = org
 
                     if method.MethodCode:  # Cannot store empty/None objects
-                        self._session.add(method)
+                        self.session.add(method)
 
                     self._updateGauge()
 
         self._flush()
 
     def parse_variables(self):
-        with self._session.no_autoflush:
+        with self.session.no_autoflush:
             CONST_VARIABLES = "Variables"
 
             if CONST_VARIABLES not in self.tables:
@@ -461,7 +447,7 @@ class ExcelTimeseries(ExcelParser):
 
                     # Finding the right CVUnitsType object only seems to be a problem with postgresql...
                     if self._engine.name == 'postgresql':
-                        varnamecv = self._session.query(CVVariableName) \
+                        varnamecv = self.session.query(CVVariableName) \
                             .filter(func.lower(CVVariableName.Name) == func.lower(var.VariableNameCV)) \
                             .first()
 
@@ -477,7 +463,7 @@ class ExcelTimeseries(ExcelParser):
                             var.NoDataValue = row[5].value
 
                     if var.NoDataValue is not None:  # NoDataValue cannot be None
-                        self._session.add(var)
+                        self.session.add(var)
 
                     self._updateGauge()
 
@@ -523,7 +509,7 @@ class ExcelTimeseries(ExcelParser):
 
 
                     # Action
-                    method = self._session.query(Methods).filter_by(MethodCode=row[4].value).first()
+                    method = self.session.query(Methods).filter_by(MethodCode=row[4].value).first()
                     action.MethodObj = method
                     #TODO ActionType
                     action.ActionTypeCV = "Observation"
@@ -533,7 +519,7 @@ class ExcelTimeseries(ExcelParser):
                     action.EndDateTimeUTCOffset = utc_offset
 
                     # Feature Actions
-                    sampling_feature = self._session.query(SamplingFeatures)\
+                    sampling_feature = self.session.query(SamplingFeatures)\
                         .filter_by(SamplingFeatureCode=row[3].value)\
                         .first()
 
@@ -548,30 +534,30 @@ class ExcelTimeseries(ExcelParser):
                         last_name = names[1].strip()
                     first_name = names[0].strip()
 
-                    person = self._session.query(People).filter_by(PersonLastName=last_name, PersonFirstName=first_name).first()
-                    affiliations = self._session.query(Affiliations).filter_by(PersonID=person.PersonID).first()
+                    person = self.session.query(People).filter_by(PersonLastName=last_name, PersonFirstName=first_name).first()
+                    affiliations = self.session.query(Affiliations).filter_by(PersonID=person.PersonID).first()
                     act_by.AffiliationObj = affiliations
                     act_by.ActionObj = action
                     act_by.IsActionLead = True
 
 
-                    # self._session.no_autoflush
-                    self._session.flush()
+                    # self.session.no_autoflush
+                    self.session.flush()
 
-                    self._session.add(action)
-                    self._session.flush()
-                    self._session.add(feat_act)
-                    self._session.add(act_by)
-                    # self._session.add(related_action)
-                    self._session.flush()
+                    self.session.add(action)
+                    self.session.flush()
+                    self.session.add(feat_act)
+                    self.session.add(act_by)
+                    # self.session.add(related_action)
+                    self.session.flush()
                     # Measurement Result (Different from Measurement Result Value) also creates a Result
-                    variable = self._session.query(Variables).filter_by(VariableCode=row[7].value).first()
+                    variable = self.session.query(Variables).filter_by(VariableCode=row[7].value).first()
 
 
-                    units_for_result = self._session.query(Units).filter_by(UnitsName=row[8].value).first()
-                    proc_level = self._session.query(ProcessingLevels).filter_by(ProcessingLevelCode=str(row[9].value)).first()
+                    units_for_result = self.session.query(Units).filter_by(UnitsName=row[8].value).first()
+                    proc_level = self.session.query(ProcessingLevels).filter_by(ProcessingLevelCode=str(row[9].value)).first()
 
-                    units_for_agg = self._session.query(Units).filter_by(UnitsName=row[12].value).first()
+                    units_for_agg = self.session.query(Units).filter_by(UnitsName=row[12].value).first()
 
                     # series_result.IntendedTimeSpacing = row[11].value
                     # series_result.IntendedTimeSpacingUnitsObj = units_for_agg
@@ -589,29 +575,27 @@ class ExcelTimeseries(ExcelParser):
 
                     series_result.ResultDateTime = start_date
 
-                    self._session.add(series_result)
-                    # self._session.flush()  # steph
-                    self._session.commit()  # me
+                    self.session.add(series_result)
+                    # self.session.flush()  # steph
+                    self.session.commit()  # me
 
                     if self.dataset is not None:
                         #DataSetsResults
                         dataset_result.DataSetObj = self.dataset
                         dataset_result.ResultObj = series_result
-                        self._session.add(dataset_result)
+                        self.session.add(dataset_result)
 
                     # Timeseries Result Value Metadata
 
-                    my_meta = {}
-                    my_meta["Result"] = series_result
-                    my_meta["CensorCodeCV"] = row[14].value
-                    my_meta["QualityCodeCV"] = row[15].value
+                    metadata[row[1].value] = {
+                        'Result': series_result,
+                        'CensorCodeCV': row[14].value,
+                        'QualityCodeCV': row[15].value,
+                        'TimeAggregationInterval': row[11].value,
+                        'TimeAggregationIntervalUnitsObj': units_for_agg
+                    }
 
-                    my_meta["TimeAggregationInterval"] = row[11].value
-                    my_meta["TimeAggregationIntervalUnitsObj"] = units_for_agg
-
-                    metadata[row[1].value] = my_meta
-
-                    # self._session.add(measure_result_value)
+                    # self.session.add(measure_result_value)
                     self._flush()
 
                     self._updateGauge()
@@ -657,7 +641,7 @@ class ExcelTimeseries(ExcelParser):
             # If the session engine is connected to a database NOT stored
             # in memory, the connection must be closed before 'serial.to_sql'
             # can connect to the database.
-            self._session.close()
+            self.session.close()
 
         if 'postgresql' in repr(self._engine):
             # Column names are lower cased when using postgresql...
@@ -671,6 +655,6 @@ class ExcelTimeseries(ExcelParser):
                       con=self._engine,
                       index=False)
 
-        self._session.flush()
+        self.session.flush()
 
         return serial

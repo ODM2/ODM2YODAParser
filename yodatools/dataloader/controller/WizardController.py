@@ -223,7 +223,7 @@ class WizardController(WizardView):
         )
 
         # When true, the thread will terminate when app is closed
-        # When false, the thread will continue even after the ap is closed
+        # When false, the thread will continue even after the app is closed
         self.thread.setDaemon(True)
         self.thread.start()
 

@@ -37,11 +37,11 @@ class ExcelInput(iInputs):
 
         if type_ == "TimeSeries":
             # raise Exception("TimeSeries Parsing is not currently supported")
-            et = ExcelTimeseries(self.file_path, gauge=self.gauge)
-            et.parse(self._session_factory)
+            et = ExcelTimeseries(self.file_path, self._session_factory, gauge=self.gauge)
+            et.parse()
         else:
-            es = ExcelSpecimen(self.file_path, gauge=self.gauge)
-            es.parse(self._session_factory)
+            es = ExcelSpecimen(self.file_path, self._session_factory, gauge=self.gauge)
+            es.parse()
 
 
         # self._session.commit()
