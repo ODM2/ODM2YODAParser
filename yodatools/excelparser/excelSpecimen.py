@@ -41,28 +41,17 @@ class ExcelSpecimen(ExcelParser):
 
                 rows = ws[table.ref]
 
-                if table.name == 'DatasetInformation':
-                    # The DatasetInformation table does not have
-                    # headers so it must be handled differently
-                    d = DataFrame([[cell.value for cell in row] for row in rows])
+                # check if table_rows length is less than 2, since the first row is just the table headers
+                if len(rows) < 2:
+                    continue
 
-                    headers = d[0].tolist()  # Headers are in the first column
-                    data = [d[1].tolist(), ]  # data values are in the second column
+                # get headers from the first row and remove leading/trailing whitespaces
+                headers = map(lambda x: x.strip(), [cell.value for cell in rows[0]])
 
-                else:
+                # get values from 2...n rows
+                data = [[cell.value for cell in row] for row in rows[1:]]
 
-                    # check if table_rows length is less than 2, since the first row is just the table headers
-                    if len(rows) < 2:
-                        continue
-
-                    headers = [cell.value for cell in rows[0]]  # get headers from the first row
-                    data = [[cell.value for cell in row] for row in rows[1:]]  # get values from 2...n rows
-
-                headers = map(lambda x: x.strip(), headers)  # remove leading/trailing whitespaces from headers...
-
-                df = DataFrame(data, columns=headers).dropna(how='all')
-
-                self.tables[table.name.strip()] = df
+                self.tables[table.name.strip()] = DataFrame(data, columns=headers).dropna(how='all')
 
         self.total_rows_to_read = self.calc_total_rows()
 
