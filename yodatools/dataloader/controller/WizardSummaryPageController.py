@@ -52,22 +52,22 @@ class WizardSummaryPageController(WizardSummaryPageView):
             session = yoda.sendODM2Session()
 
         self.gauge.SetValue(50)
-        print "Input complete"
+        print("Input complete")
         # Go through each checkbox
         if yoda_output_file_path is not None:
             yaml = yamlOutput()
             yaml.save(session=session, file_path=yoda_output_file_path)
             print "Yoda Output Complete"
 
-        if odm2_connection is not None:
-            db = dbOutput()
-            db.save(session=session, connection_string=odm2_connection)
-            print "DB Output Complete"
-
-        if sqlite_connection is not None:
-            db = dbOutput()
-            db.save(session=session, connection_string=sqlite_connection)
-            print "SQLite Output Complete"
+        # if odm2_connection is not None:
+        #     db = dbOutput()
+        #     db.save(session=session, connection_string=odm2_connection)
+        #     print "DB Output Complete"
+        #
+        # if sqlite_connection is not None:
+        #     db = dbOutput()
+        #     db.save(session=session, connection_string=sqlite_connection)
+        #     print "SQLite Output Complete"
 
         session.close_all()
 

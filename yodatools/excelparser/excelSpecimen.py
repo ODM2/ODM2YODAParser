@@ -108,19 +108,21 @@ class ExcelSpecimen(ExcelParser):
 
     def parse_datasets(self):
 
-        table = self.tables.get('DatasetInformation')
+        dataset_uuid = self.get_named_range_cell_value('DatasetUUID')
+        dataset_type = self.get_named_range_cell_value('DatasetType')
+        dataset_code = self.get_named_range_cell_value('DatasetCode')
+        dataset_title = self.get_named_range_cell_value('DatasetTitle')
+        dataset_abstract = self.get_named_range_cell_value('DatasetAbstract')
 
-        for _, row in table.iterrows():
+        params = {
+            'DataSetUUID': dataset_uuid,
+            'DataSetTypeCV': dataset_type,
+            'DataSetCode': dataset_code,
+            'DataSetTitle': dataset_title,
+            'DataSetAbstract': dataset_abstract
+        }
 
-            params = {
-                'DataSetUUID': row.get('Dataset UUID', str(uuid4())),
-                'DataSetTypeCV': row.get('Dataset Type [CV]'),
-                'DataSetCode': row.get('Dataset Code'),
-                'DataSetTitle': row.get('Dataset Title'),
-                'DataSetAbstract': row.get('Dataset Abstract')
-            }
-
-            self.data_set = self.get_or_create(DataSets, params, filter_by=['DataSetCode'])
+        self.data_set = self.get_or_create(DataSets, params, filter_by=['DataSetCode'])
 
     def parse_analysis_results(self):
         """
@@ -132,6 +134,7 @@ class ExcelSpecimen(ExcelParser):
         affiliations = defaultdict(lambda: None)  # type: dict[str, Affiliations]
         methods = defaultdict(lambda: None)
         sampling_features = defaultdict(lambda: None)
+        collection_actions = defaultdict(lambda: None)
 
         table = self.tables.get('DataColumns', DataFrame())
 
@@ -171,7 +174,7 @@ class ExcelSpecimen(ExcelParser):
                     continue
 
             # Create the Actions object
-            action = self.create(Actions, **{
+            action = self.create(Actions, commit=False, **{
                 'MethodObj': methods.get(method_code),
                 'ActionTypeCV': 'Specimen analysis',
                 'BeginDateTime': row.get('Analysis DateTime'),
@@ -179,7 +182,7 @@ class ExcelSpecimen(ExcelParser):
             })
 
             # Creat the FeatureActions object
-            feature_action = self.create(FeatureActions, **{
+            feature_action = self.create(FeatureActions, commit=False, **{
                 'SamplingFeatureObj': sampling_features.get(sampling_feature_code),
                 'ActionObj': action
             })
@@ -196,22 +199,26 @@ class ExcelSpecimen(ExcelParser):
                     .first()
 
             # Create the ActionBy object
-            _ = self.create(ActionBy, **{
+            _ = self.create(ActionBy, commit=False, **{
                 'IsActionLead': True,
                 'AffiliationObj': affiliations[analyst_name],
                 'ActionObj': action,
             })
 
             # Get the collection Actions object and create RelatedActions object
-            collection_action = self.session.query(FeatureActions) \
-                .filter(FeatureActions.FeatureActionID == SamplingFeatures.SamplingFeatureID) \
-                .filter(SamplingFeatures.SamplingFeatureCode == row.get('Specimen Code')) \
-                .first()
+            specimen_code = row.get('Specimen Code')
+            if specimen_code not in collection_actions:
+                collection_actions[specimen_code] = self.session.query(FeatureActions) \
+                    .filter(FeatureActions.FeatureActionID == SamplingFeatures.SamplingFeatureID) \
+                    .filter(SamplingFeatures.SamplingFeatureCode == row.get('Specimen Code')) \
+                    .first()
 
-            _ = self.create(RelatedActions, **{
+            assert(collection_actions[specimen_code] is not None)
+
+            _ = self.create(RelatedActions, commit=False, **{
                 'ActionObj': action,
                 'RelationshipTypeCV': 'Is child of',
-                'RelatedActionObj': collection_action.ActionObj,
+                'RelatedActionObj': collection_actions[specimen_code].ActionObj,
             })
 
             # Get the Variables, Units, and ProcessingLevels objects, which are
@@ -225,7 +232,7 @@ class ExcelSpecimen(ExcelParser):
                 print('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index))
 
             # Create the MeasurementResults object
-            result = self.create(MeasurementResults, **{
+            result = self.create(MeasurementResults, commit=False, **{
                 # 'ResultUUID': row.get('ResultUUID'),
                 'ResultUUID': str(uuid4()),
                 'CensorCodeCV': row.get('Censor Code CV'),
@@ -241,24 +248,26 @@ class ExcelSpecimen(ExcelParser):
                 'StatusCV': 'Complete',
                 'SampledMediumCV': row.get('Sampled Medium CV'),
                 'ValueCount': 1,
-                'ResultDateTime': collection_action.ActionObj.BeginDateTime,
+                'ResultDateTime': collection_actions[specimen_code].ActionObj.BeginDateTime,
             })
 
             # Create MeasurementResultValues object
-            _ = self.create(MeasurementResultValues, **{
+            _ = self.create(MeasurementResultValues, commit=False, **{
                 'DataValue': row.get('Data Value'),
-                'ValueDateTime': collection_action.ActionObj.BeginDateTime,
-                'ValueDateTimeUTCOffset': collection_action.ActionObj.BeginDateTimeUTCOffset,
+                'ValueDateTime': collection_actions[specimen_code].ActionObj.BeginDateTime,
+                'ValueDateTimeUTCOffset': collection_actions[specimen_code].ActionObj.BeginDateTimeUTCOffset,
                 'ResultObj': result
             })
 
             # Create DataSetsResults object
-            _ = self.create(DataSetsResults, **{
+            _ = self.create(DataSetsResults, commit=False, **{
                 'DataSetObj': self.data_set,
                 'ResultObj': result
             })
 
             self._updateGauge()
+
+        self.session.commit()
 
     def parse_units(self):
         table = self.tables.get('Units', DataFrame())
@@ -349,11 +358,8 @@ class ExcelSpecimen(ExcelParser):
 
     def parse_sampling_feature(self):
 
-        elevation_datum_range = self.workbook.defined_names['ElevationDatum'].destinations
-        elevation_datum = self.get_named_range_value(*next(elevation_datum_range))
-
-        latlon_datum_range = self.workbook.defined_names['LatLonDatum'].destinations
-        latlon_datum = self.get_named_range_value(*next(latlon_datum_range))
+        elevation_datum = self.get_named_range_cell_value('ElevationDatum')
+        latlon_datum = self.get_named_range_cell_value('LatLonDatum')
 
         # TODO: The SpatialReferences table does not exist in current excel templates... seek guidance young one.
         # Currently the fix is to get/create a new record using latlon_datum as the SRS code and name...
@@ -475,17 +481,17 @@ class ExcelSpecimen(ExcelParser):
                 'SpecimenTypeCV': row.get('Specimen Type [CV]')
             }
 
-            sampling_feature = self.get_or_create(Specimens, params, filter_by=['SamplingFeatureCode'])
+            sampling_feature = self.get_or_create(Specimens, params, filter_by=['SamplingFeatureCode'], commit=False)
 
             # Create the RelatedFeatures object.
-            _ = self.create(RelatedFeatures, **{
+            _ = self.create(RelatedFeatures, commit=False, **{
                 'RelationshipTypeCV': 'Was Collected at',
                 'SamplingFeatureObj': sampling_feature,
                 'RelatedFeatureObj': collection_sites[collection_site_code],
             })
 
             # Create the Actions object
-            action = self.create(Actions, **{
+            action = self.create(Actions, commit=False, **{
                 'ActionTypeCV': 'Specimen collection',
                 'BeginDateTime': row.get('Collection Date Time'),
                 'BeginDateTimeUTCOffset': row.get('UTC Offset'),
@@ -493,12 +499,14 @@ class ExcelSpecimen(ExcelParser):
             })
 
             # And finally, create the FeatureActions object
-            _ = self.create(FeatureActions, **{
+            _ = self.create(FeatureActions, commit=False, **{
                 'ActionObj': action,
                 'SamplingFeatureObj': sampling_feature
             })
 
             self._updateGauge()
+
+        self.session.commit()
 
     def parse_methods(self):
         """

@@ -121,7 +121,7 @@ class ExcelParser(object):
 
         self.rows_read += rows_read
         try:
-            value = (float(self.rows_read) / float(self.total_rows_to_read) * 100.0) / 2.0
+            value = (float(self.rows_read) / float(self.total_rows_to_read)) * 100.0
             self.gauge.SetValue(value)
         except ZeroDivisionError:
             pass
@@ -134,21 +134,85 @@ class ExcelParser(object):
         return total
 
     def get_named_range(self, sheet, coord):
+        """
+        Returns the range of cells contained in a given worksheet by a given set of coordinates
+        :param sheet: string like.
+            Name of the worksheet
+        :param coord: string like
+            String representation of sheet coordinates
+        :return: Range of cell(s)
+        """
         ws = self.workbook[sheet]
         return ws[coord]
 
     def get_named_range_value(self, sheet, coord):
+        """
+        Gets the value of the cell(s) in a given worksheet at a given set of coordinates
+
+        :param sheet: string like.
+            Name of the worksheet with the named range
+        :param coord: string like.
+            String representation of the named range coordinate (e.g. '$A$1')
+        :return: Value(s) contained in the named range given by `coord`
+        """
         return self.get_named_range(sheet, coord).value
 
+    def get_named_range_cell_value(self, named_range):
+        """
+        Gets the value of the cell given by named_range. The passed in named range
+        should reference only a single cell.
+
+
+        :param named_range: string like.
+            Name of the named range
+        :return:
+        """
+        try:
+            nr = self.workbook.defined_names[named_range]
+            return self.get_named_range_value(*next(nr.destinations))
+        except KeyError:
+            return None
+
+
     def parse_name(self, fullname):  # type: (str) -> dict
+        """
+        Parses a full name contained in a string and returns a dict representation
+        of the name. Also removes trailing/leading whitespace of the names.
+
+        If `fullname` does not contain a comma, it's assumed `fullname` is formatted as:
+
+            "<first name> <middles name(s)> <last name>"
+
+        If `fullname` contains a comma (e.g. "Doe, John"), then it is assumed `fullname`
+        if formatted as:
+
+            "<last name>, <first name> <middle name(s)>"
+
+        :param fullname:
+        :return:
+        """
         values = re.split(r'\s+', fullname)
+
+        if any([',' in name for name in values]):
+            # `fullname` contained a comma (formatted as "<last>, <first> <middle>")
+            # so do a little rearranging.
+            lastname = values.pop(0).replace(',', '')
+
+            try:
+                firstname = values.pop(0)
+            except IndexError:
+                firstname = ''
+
+            values = [firstname] + values + [lastname]
 
         names = {
             'first_name': values[0],
             'last_name': values[-1]
         }
 
-        if len(names) >= 3:
-            names['middle_name'] = ' '.join(names[1:-1]),
+        middle = ' '.join(values[1:-1])
+        if len(middle):
+            names.update(middle_name=middle)
+
 
         return names
