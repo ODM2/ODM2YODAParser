@@ -1,6 +1,8 @@
 import os
 import re
 
+from pubsub import pub
+
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
 
@@ -11,7 +13,7 @@ from pandas import isnull, DataFrame
 class ExcelParser(object):
 
     TABLE_NAMES = [
-        'DataColumns',
+        'Analysis_Results',
         'Organizations',
         'People'
         'ProcessingLevels',
@@ -39,7 +41,6 @@ class ExcelParser(object):
         self.sheets = []
         self.name_ranges = {}
         self.tables = {}
-        self._orgs = {}
 
         self._init_data(input_file)
 
@@ -126,13 +127,6 @@ class ExcelParser(object):
         except ZeroDivisionError:
             pass
 
-    def calc_total_rows(self):
-        total = 0
-        for key, value in self.tables.iteritems():  # type: str, DataFrame
-            if key in self.TABLE_NAMES:
-                total += value.shape[0]
-        return total
-
     def get_named_range(self, sheet, coord):
         """
         Returns the range of cells contained in a given worksheet by a given set of coordinates
@@ -216,3 +210,9 @@ class ExcelParser(object):
 
 
         return names
+
+    def update_progress_label(self, message):
+        pub.sendMessage('controller.update_progress_label', message=message)
+
+    def update_output_text(self, message):
+        pub.sendMessage('controller.update_output_text', message='%s\n' % message)

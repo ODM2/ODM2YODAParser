@@ -1,10 +1,12 @@
 import os
+from datetime import timedelta
 from collections import defaultdict
 import openpyxl
 from openpyxl.worksheet.table import Table
 from openpyxl.cell.cell import Cell
 from openpyxl.workbook.workbook import Workbook
 from uuid import uuid4
+from pubsub import pub
 
 from odm2api.models import *
 from yodatools.converter.Abstract import iInputs
@@ -25,13 +27,21 @@ class ExcelSpecimen(ExcelParser):
 
         super(ExcelSpecimen, self).__init__(input_file, session_factory, **kwargs)
 
+        self.spatial_references = defaultdict(lambda: None)
+        self.sites = defaultdict(lambda: None)
+        self.methods = defaultdict(lambda: None)
+        self.orgs = defaultdict(lambda: None)
+
 
     def _init_data(self, file_path):
+
+        self.update_progress_label('Loading %s' % file_path)
+
         self.workbook = openpyxl.load_workbook(file_path, data_only=True)  # type: Workbook
 
         # Loop through worksheets to grab table data
-        for ws in self.workbook.worksheets:
 
+        for ws in self.workbook.worksheets:
             try:
                 tables = getattr(ws, '_tables', [])
             except IndexError:
@@ -39,21 +49,25 @@ class ExcelSpecimen(ExcelParser):
 
             for table in tables:  # type: Table
 
+                self.update_progress_label('Loading table data: %s' % table.name)
+
                 rows = ws[table.ref]
 
                 # check if table_rows length is less than 2, since the first row is just the table headers
                 if len(rows) < 2:
                     continue
 
-                # get headers from the first row and remove leading/trailing whitespaces
+                # get headers from row 1
                 headers = map(lambda x: x.strip(), [cell.value for cell in rows[0]])
 
-                # get values from 2...n rows
+                # get values from rows 2...n
                 data = [[cell.value for cell in row] for row in rows[1:]]
 
                 self.tables[table.name.strip()] = DataFrame(data, columns=headers).dropna(how='all')
 
-        self.total_rows_to_read = self.calc_total_rows()
+        self.update_progress_label('Calculating total row size')
+        for key, table in self.tables.iteritems():
+            self.total_rows_to_read += table.shape[0]
 
         self.workbook.close()
 
@@ -80,22 +94,30 @@ class ExcelSpecimen(ExcelParser):
 
         start = time.time()
 
-        self.parse_people_and_orgs_sheet()
+        self.parse_people_and_orgs()
         self.parse_datasets()
         self.parse_methods()
         self.parse_variables()
         self.parse_units()
         self.parse_processing_level()
-        self.parse_sampling_feature()
+        self.parse_spatial_reference()
+        self.parse_sites_table()
         self.parse_specimens()
         self.parse_analysis_results()
 
+
         end = time.time()
-        print(end - start)
+
+        hours, remainder = divmod(end - start, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        self.update_progress_label('Input completed in %s:%s:%s' % (int(hours), int(minutes), int(seconds)))
 
         return True
 
     def parse_datasets(self):
+
+        self.update_progress_label('parsing datasets')
 
         dataset_uuid = self.get_named_range_cell_value('DatasetUUID')
         dataset_type = self.get_named_range_cell_value('DatasetType')
@@ -119,32 +141,35 @@ class ExcelSpecimen(ExcelParser):
         :return: None
         """
 
-        # Keep a reference to affiliations, sampling features, and methods to reduce db queries
-        affiliations = defaultdict(lambda: None)  # type: dict[str, Affiliations]
-        methods = defaultdict(lambda: None)
+        # Keep a reference to affiliations and sampling features to reduce db queries
+        affiliations = defaultdict(lambda: None)
         sampling_features = defaultdict(lambda: None)
         collection_actions = defaultdict(lambda: None)
 
-        table = self.tables.get('DataColumns', DataFrame())
+        table = self.tables.get('Analysis_Results', DataFrame())
 
         # Force values in 'Specimen Code' column to be strings
         table['Specimen Code'] = table['Specimen Code'].astype(str)
 
+        row_count, _ = table.shape
+
         for index, row in table.iterrows():
+
+            self.update_progress_label('Reading Analysis_Results table %d/%d' % (index + 1, row_count))
+
             # Get the Methods object that is needed to create the Actions object.
             # If the method does not exist in the database, skip inserting this row
             # as the method is required.
             method_code = row.get('Analysis Method Code')
-            if method_code not in methods:
-                try:
-                    methods[method_code] = self.session.query(Methods).filter_by(MethodCode=method_code).one()
-                except NoResultFound:
-                    print('Skipped row {} in DataColumns table in Anaylsis_Results worksheet: Method "{}" not found.'.format(
-                        index,
-                        method_code
-                    ))
+            if method_code.lower() not in self.methods:
+                self.update_output_text('Skipped \'Anaylsis_Results\':\'Anaylsis_Results\' row {} - Method "{}" not found'.format(
+                    index,
+                    method_code
+                ))
 
-                    continue
+                continue
+
+            method = self.methods.get(method_code.lower())
 
             # Get the sampling feature, which should already be parsed and
             # exist in the database. If not, then skip this row.
@@ -155,8 +180,8 @@ class ExcelSpecimen(ExcelParser):
                         .filter_by(SamplingFeatureCode=sampling_feature_code)\
                         .one()
                 except NoResultFound:
-                    print('Skipped row {} in DataColumns table in Anaylsis_Results worksheet: Specimen "{}" not found.'.format(
-                        index,
+                    self.update_output_text("Skipped 'Analysis_Results':'Analysis_Results' row {} - Sampling Feature Code '{}' did not map to any Specimens.".format(
+                        index + 1,
                         sampling_feature_code
                     ))
 
@@ -164,7 +189,7 @@ class ExcelSpecimen(ExcelParser):
 
             # Create the Actions object
             action = self.create(Actions, commit=False, **{
-                'MethodObj': methods.get(method_code),
+                'MethodObj': method,
                 'ActionTypeCV': 'Specimen analysis',
                 'BeginDateTime': row.get('Analysis DateTime'),
                 'BeginDateTimeUTCOffset': row.get('UTC Offset')
@@ -202,7 +227,9 @@ class ExcelSpecimen(ExcelParser):
                     .filter(SamplingFeatures.SamplingFeatureCode == row.get('Specimen Code')) \
                     .first()
 
-            assert(collection_actions[specimen_code] is not None)
+            if collection_actions[specimen_code] is None:
+                self.update_output_text("Skipped 'AnalysisResults':'AnalysisResults' row %d - FeatureAction with Sampling Feature Code '%s' not found" % (index + 1, specimen_code))
+                continue
 
             _ = self.create(RelatedActions, commit=False, **{
                 'ActionObj': action,
@@ -218,7 +245,7 @@ class ExcelSpecimen(ExcelParser):
             time_aggregation_unit = self.get(Units, UnitsName=row.get('Time Aggregation Unit', ''))
 
             if not all([variable, unit, processing_lvl, time_aggregation_unit]):
-                print('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index))
+                self.update_output_text('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
 
             # Create the MeasurementResults object
             result = self.create(MeasurementResults, commit=False, **{
@@ -260,6 +287,7 @@ class ExcelSpecimen(ExcelParser):
 
     def parse_units(self):
         table = self.tables.get('Units', DataFrame())
+        self.update_progress_label('Reading Units')
         for _, row in table.iterrows():
 
             params = {
@@ -274,9 +302,10 @@ class ExcelSpecimen(ExcelParser):
 
         self._updateGauge(table.shape[0])
 
-    def parse_people_and_orgs_sheet(self):
+    def parse_people_and_orgs(self):
 
-        # Create Organization objects
+        self.update_progress_label('Reading Organizations')
+
         organization_table = self.tables.get('Organizations', DataFrame())
         for _, row in organization_table.iterrows():
             params = {
@@ -287,12 +316,18 @@ class ExcelSpecimen(ExcelParser):
                 'OrganizationLink': row.get('Organization Link'),
             }
 
-            org = self.get_or_create(Organizations, params, filter_by='OrganizationName')
-            self._orgs[row.get('Organization Name')] = org  # save this for later when we create Affiliations
+            org = self.get_or_create(Organizations, params, filter_by='OrganizationName', commit=False)
+            self.orgs[row.get('Organization Name')] = org  # save this for later when we create Affiliations
 
-        self._updateGauge(organization_table.shape[0])
+            self._updateGauge()
+
+        self.session.commit()
+
 
         # Create Person and Affiliation objects
+
+        self.update_progress_label('Reading People')
+
         people_table = self.tables.get('People', DataFrame())
         for _, row in people_table.iterrows():  # type: (any, DataFrame)
 
@@ -313,24 +348,17 @@ class ExcelSpecimen(ExcelParser):
                 'PrimaryEmail': row.get('Primary Email'),
                 'PrimaryAddress': row.get('Primary Address'),
                 'PersonLink': row.get('Person Link'),
-                'OrganizationObj': self._orgs.get(row.get('Organization Name')),
+                'OrganizationObj': self.orgs.get(row.get('Organization Name')),
                 'PersonObj': person
             }
 
             _ = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
 
-        self._updateGauge(people_table.shape[0])
-
-    def get_sheet_and_table(self, sheet_name):
-        """
-        Leaving method here for reference. It's used by another method
-        that isn't being used (parse_spatial_reference()).
-        """
-        # sheet = self.workbook.get_sheet_by_name(sheet_name)
-        # return sheet, self.tables.get(sheet_name, [])
-        return NotImplementedError
+            self._updateGauge()
 
     def parse_processing_level(self):
+
+        self.update_progress_label('Reading ProcessingLevels table')
 
         table = self.tables.get('ProcessingLevels', DataFrame())
         for _, row in table.iterrows():
@@ -343,18 +371,19 @@ class ExcelSpecimen(ExcelParser):
 
             _ = self.get_or_create(ProcessingLevels, params, filter_by=['ProcessingLevelCode'])
 
-        self._updateGauge(table.shape[0])
+            self._updateGauge()
 
-    def parse_sampling_feature(self):
+    def parse_sites_table(self):
 
         elevation_datum = self.get_named_range_cell_value('ElevationDatum')
-        latlon_datum = self.get_named_range_cell_value('LatLonDatum')
 
-        # TODO: The SpatialReferences table does not exist in current excel templates... seek guidance young one.
-        # Currently the fix is to get/create a new record using latlon_datum as the SRS code and name...
-        spatial_ref = self.get_or_create(SpatialReferences, {'SRSCode': latlon_datum, 'SRSName': latlon_datum})
+        latlon_datum = self.get_named_range_cell_value('LatLonDatum')
+        spatial_ref = self.spatial_references.get(latlon_datum.lower(), None)
 
         table = self.tables.get('Sites', DataFrame())
+
+        self.update_progress_label('Reading Sites table')
+
         for _, row in table.iterrows():
 
             params = {
@@ -372,37 +401,35 @@ class ExcelSpecimen(ExcelParser):
                 'SpatialReferenceObj': spatial_ref
             }
 
-            _ = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'])
+            self.sites[params.get('SamplingFeatureCode', '').lower()] = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'], commit=False)
+
+        self.session.commit()
 
         self._updateGauge(table.shape[0])
 
     def parse_spatial_reference(self):
         """
-        Keeping this here for reference (no pun intended), but the commented out code
-        is not a correct implemenation, nor does a worksheet named "SpatialReferences"
-        exist in the SpecimenTimeSeries excel YODA file...
-        :return:
+        Parse spatial references
+        :return: None
         """
-        # SHEET_NAME = "SpatialReferences"
-        # sheet, tables = self.get_sheet_and_table(SHEET_NAME)
-        #
-        # if not len(tables):
-        #     return []
-        #
-        # spatial_references = {}
-        # for table in tables:
-        #     cells = sheet[self.get_range_address(table)]
-        #     for row in cells:
-        #         sr = SpatialReferences()
-        #         sr.SRSCode = row[0].value
-        #         sr.SRSName = row[1].value
-        #         sr.SRSDescription = row[2].value
-        #         sr.SRSLink = row[3].value
-        #
-        #         spatial_references[sr.SRSName] = sr
-        #
-        # return spatial_references
-        raise NotImplementedError
+
+        table = self.tables.get('SpatialReferences', DataFrame())
+
+        self.update_progress_label('Reading SpatialReferences table')
+
+        for _, row in table.iterrows():
+
+            params = {
+                'SRSCode': row.get('SRSCode'),
+                'SRSName': row.get('SRSName'),
+                'SRSDescription': row.get('SRSDescription'),
+                'SRSLink': row.get('SRSLink'),
+            }
+
+            self.spatial_references[row.get('SRSName', '').lower()] = self.get_or_create(SpatialReferences, params, filter_by=['SRSCode'], commit=False)
+
+        self.session.commit()
+
 
     def parse_specimens(self):
         """
@@ -410,51 +437,45 @@ class ExcelSpecimen(ExcelParser):
         :return: None
         """
 
-        # keep track of collection sites, methods to reduce number of db queries
-        collection_sites = defaultdict(lambda: None)
-        methods = defaultdict(lambda: None)
-
         table = self.tables.get('Specimens', DataFrame())
 
         # Force values in 'Sampling Feature Code' column to be strings
         table['Sampling Feature Code'] = table['Sampling Feature Code'].astype(str)
 
-        for _, row in table.iterrows():
+        row_count, _ = table.shape
+
+        for index, row in table.iterrows():
+
+            self.update_progress_label('Reading Specimens table %d/%d' % (index + 1, row_count))
 
             # First get the sampling feature for the RelatedFeatures object that will
             # be created later. If the sampling feature does not exist in the database,
             # skip inserting this row, since the sampling feature (which should have
             # been parsed from the 'Sites' excel sheet) is required.
             collection_site_code = row.get('Collection Site', '')
-            if collection_site_code not in collection_sites:
-                try:
-                    collection_sites[collection_site_code] = self.session.query(SamplingFeatures).filter(
-                        SamplingFeatures.SamplingFeatureCode == collection_site_code
-                    ).one()
-                except NoResultFound:
-                    print('Error: Collection Site "{}" not found. Skipping database insertion of Specimen "{}".'.format(
-                        collection_site_code,
-                        row.get('Sampling Feature Code')
-                    ))
+            if collection_site_code.lower() not in self.sites:
+                self.update_output_text('Error: Collection Site "{}" not found. Skipping database insertion of Specimen "{}".'.format(
+                    collection_site_code,
+                    row.get('Sampling Feature Code')
+                ))
 
-                    continue
+                continue
+
+            collection_site = self.sites.get(collection_site_code.lower(), None)
 
             # Next, get the Methods object for the Actions object that will also be
             # created later. Once again, if the method does not exist in the database,
             # skip inserting this row since the method is required.
             method_code = row.get('Collection Method Code', '')
-            if method_code not in methods:
-                try:
-                    methods[method_code] = self.session.query(Methods) \
-                        .filter(Methods.MethodCode == method_code) \
-                        .one()
-                except NoResultFound:
-                    print('Error: Method "{}" not found. Skipping database insertion of Specimen "{}"'.format(
-                        method_code,
-                        row.get('Sampling Feature Code')
-                    ))
+            if method_code.lower() not in self.methods:
+                self.update_output_text('Error: Method "{}" not found. Skipping database insertion of Specimen "{}"'.format(
+                    method_code,
+                    row.get('Sampling Feature Code')
+                ))
 
-                    continue
+                continue
+
+            method = self.methods.get(method_code.lower())
 
             # Finally, create the SamplingFeatures specimen object for this row.
             params = {
@@ -476,7 +497,7 @@ class ExcelSpecimen(ExcelParser):
             _ = self.create(RelatedFeatures, commit=False, **{
                 'RelationshipTypeCV': 'Was Collected at',
                 'SamplingFeatureObj': sampling_feature,
-                'RelatedFeatureObj': collection_sites[collection_site_code],
+                'RelatedFeatureObj': collection_site
             })
 
             # Create the Actions object
@@ -484,7 +505,7 @@ class ExcelSpecimen(ExcelParser):
                 'ActionTypeCV': 'Specimen collection',
                 'BeginDateTime': row.get('Collection Date Time'),
                 'BeginDateTimeUTCOffset': row.get('UTC Offset'),
-                'MethodObj': methods.get(method_code)
+                'MethodObj': method
             })
 
             # And finally, create the FeatureActions object
@@ -514,15 +535,19 @@ class ExcelSpecimen(ExcelParser):
         # Force values in 'Method Code' column to be strings
         table['Method Code'] = table['Method Code'].astype(str)
 
+        self.update_progress_label('Reading Methods table')
+
         for _, row in table.iterrows():
 
-            _ = self.parse_method(**row)
+            self.methods[row.get('Method Code', '').lower()] = self.parse_method(**row)
+
+        self.session.commit()
 
         self._updateGauge(table.shape[0])
 
     def parse_method(self, **kwargs):
 
-        org = self._orgs.get(kwargs.get('Organization Name'))
+        org = self.orgs.get(kwargs.get('Organization Name'))
 
         params = {
             'MethodTypeCV': kwargs.get('Method Type [CV]'),
@@ -537,12 +562,15 @@ class ExcelSpecimen(ExcelParser):
         # After checking for required fields, add the non required field
         params.update(MethodLink=kwargs.get('MethodLink'), MethodDescription=kwargs.get('Method Description'))
 
-        return self.get_or_create(Methods, params, filter_by='MethodCode')
+        return self.get_or_create(Methods, params, filter_by='MethodCode', commit=False)
 
 
     def parse_variables(self):
 
         table = self.tables.get('Variables', DataFrame())
+
+        self.update_progress_label('Reading Variables table')
+
         for _, row in table.iterrows():
 
             params = {
@@ -554,6 +582,8 @@ class ExcelSpecimen(ExcelParser):
                 'NoDataValue': row.get('No Data Value')
             }
 
-            _ = self.get_or_create(Variables, params, filter_by=['VariableCode'], check_fields=['NoDataValue'])
+            _ = self.get_or_create(Variables, params, filter_by=['VariableCode'], check_fields=['NoDataValue'], commit=False)
+
+        self.session.commit()
 
         self._updateGauge(table.shape[0])

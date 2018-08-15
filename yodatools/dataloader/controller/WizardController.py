@@ -9,6 +9,7 @@ from WizardYodaPageController import WizardYodaPageController
 from WizardSQLitePageController import WizardSQLitePageController
 
 import wx
+from pubsub import pub
 
 from yodatools.dataloader.view.WizardView import WizardView
 from odm2api.ODMconnection import dbconnection as dbc
@@ -49,6 +50,10 @@ class WizardController(WizardView):
 
         self.show_home_page()
         self.SetSize((450, 450))
+
+        pub.subscribe(self.handleError, 'controller.error')
+        pub.subscribe(self.update_progress_bar_label, 'controller.update_progress_label')
+        pub.subscribe(self.update_output_text, 'controller.update_output_text')
 
     def display_warning(self):
         """
@@ -229,3 +234,11 @@ class WizardController(WizardView):
 
     def handleError(self, message):
         wx.MessageBox("An exception has occurred:\n\n%s" % message, style=wx.ICON_ERROR)
+
+    def update_progress_bar_label(self, message):
+        label = self.summary_page.gauge_label  # type: wx.StaticText
+        label.SetLabelText(message)
+
+    def update_output_text(self, message):
+        txt = self.summary_page.output  # type: wx.TextCtrl
+        txt.AppendText(message)

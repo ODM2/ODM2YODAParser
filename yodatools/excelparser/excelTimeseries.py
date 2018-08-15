@@ -288,7 +288,7 @@ class ExcelTimeseries(ExcelParser):
             if 'People_Table' == table.name:
                 affiliations = parse_authors(table)
             else:
-                orgs = parse_organizations(table, self._session)
+                orgs = parse_organizations(table, self.session)
 
         # self.session.flush()
 
