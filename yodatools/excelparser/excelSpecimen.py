@@ -1,23 +1,24 @@
 import os
 from datetime import timedelta
 from collections import defaultdict
+from uuid import uuid4
+import time
+import string
+import re
+
+import pandas as pd
+from pandas import DataFrame
+import numpy as np
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import NoResultFound
 import openpyxl
 from openpyxl.worksheet.table import Table
-from openpyxl.cell.cell import Cell
 from openpyxl.workbook.workbook import Workbook
-from uuid import uuid4
+from openpyxl.cell.cell import Cell
 from pubsub import pub
 
 from odm2api.models import *
 from yodatools.converter.Abstract import iInputs
-from pandas import DataFrame
-import pandas as pd
-import numpy as np
-import time
-import string
-import re
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.orm.exc import NoResultFound
 
 from .ExcelParser import ExcelParser
 
@@ -27,69 +28,16 @@ class ExcelSpecimen(ExcelParser):
 
         super(ExcelSpecimen, self).__init__(input_file, session_factory, **kwargs)
 
-        self.spatial_references = defaultdict(lambda: None)
         self.sites = defaultdict(lambda: None)
-        self.methods = defaultdict(lambda: None)
-        self.orgs = defaultdict(lambda: None)
-
 
     def _init_data(self, file_path):
-
-        self.update_progress_label('Loading %s' % file_path)
-
-        self.workbook = openpyxl.load_workbook(file_path, data_only=True)  # type: Workbook
-
-        # Loop through worksheets to grab table data
-
-        for ws in self.workbook.worksheets:
-            try:
-                tables = getattr(ws, '_tables', [])
-            except IndexError:
-                continue
-
-            for table in tables:  # type: Table
-
-                self.update_progress_label('Loading table data: %s' % table.name)
-
-                rows = ws[table.ref]
-
-                # check if table_rows length is less than 2, since the first row is just the table headers
-                if len(rows) < 2:
-                    continue
-
-                # get headers from row 1
-                headers = map(lambda x: x.strip(), [cell.value for cell in rows[0]])
-
-                # get values from rows 2...n
-                data = [[cell.value for cell in row] for row in rows[1:]]
-
-                self.tables[table.name.strip()] = DataFrame(data, columns=headers).dropna(how='all')
-
-        self.update_progress_label('Calculating total row size')
-        for key, table in self.tables.iteritems():
-            self.total_rows_to_read += table.shape[0]
-
+        super(ExcelSpecimen, self)._init_data(file_path)
         self.workbook.close()
-
-    def get_range_address(self, named_range):
-        if named_range is not None:
-            return named_range.attr_text.split('!')[1].replace('$', '')
-        return None
-
-    def get_range_value(self, range_name, sheet):
-        value = None
-        named_range = self.workbook.get_named_range(range_name)
-        range_ = self.get_range_address(named_range)
-        if range_:
-            value = sheet[range_].value
-        return value
-
 
     def parse(self):
         """
         Parses the excel file read in self._init_data
-        :param :
-        :return:
+        :return: None
         """
 
         start = time.time()
@@ -101,7 +49,7 @@ class ExcelSpecimen(ExcelParser):
         self.parse_units()
         self.parse_processing_level()
         self.parse_spatial_reference()
-        self.parse_sites_table()
+        self.parse_sites()
         self.parse_specimens()
         self.parse_analysis_results()
 
@@ -114,26 +62,6 @@ class ExcelSpecimen(ExcelParser):
         self.update_progress_label('Input completed in %s:%s:%s' % (int(hours), int(minutes), int(seconds)))
 
         return True
-
-    def parse_datasets(self):
-
-        self.update_progress_label('parsing datasets')
-
-        dataset_uuid = self.get_named_range_cell_value('DatasetUUID')
-        dataset_type = self.get_named_range_cell_value('DatasetType')
-        dataset_code = self.get_named_range_cell_value('DatasetCode')
-        dataset_title = self.get_named_range_cell_value('DatasetTitle')
-        dataset_abstract = self.get_named_range_cell_value('DatasetAbstract')
-
-        params = {
-            'DataSetUUID': dataset_uuid,
-            'DataSetTypeCV': dataset_type,
-            'DataSetCode': dataset_code,
-            'DataSetTitle': dataset_title,
-            'DataSetAbstract': dataset_abstract
-        }
-
-        self.data_set = self.get_or_create(DataSets, params, filter_by=['DataSetCode'])
 
     def parse_analysis_results(self):
         """
@@ -239,8 +167,8 @@ class ExcelSpecimen(ExcelParser):
 
             # Get the Variables, Units, and ProcessingLevels objects, which are
             # needed to create a MeasurementResults
-            variable = self.get(Variables, VariableCode=row.get('Variable Code', ''))
-            unit = self.get(Units, UnitsName=row.get('Units', ''))
+            variable = self.variables.get(row.get('Variable Code').lower())
+            unit = self.units.get(row.get('Units').lower())
             processing_lvl = self.get(ProcessingLevels, ProcessingLevelCode=row.get('Processing Level', ''))
             time_aggregation_unit = self.get(Units, UnitsName=row.get('Time Aggregation Unit', ''))
 
@@ -249,8 +177,7 @@ class ExcelSpecimen(ExcelParser):
 
             # Create the MeasurementResults object
             result = self.create(MeasurementResults, commit=False, **{
-                # 'ResultUUID': row.get('ResultUUID'),
-                'ResultUUID': str(uuid4()),
+                'ResultUUID': row.get('ResultUUID', str(uuid4())),
                 'CensorCodeCV': row.get('Censor Code CV'),
                 'QualityCodeCV': row.get('Quality Code CV'),
                 'TimeAggregationInterval': row.get('Time Aggregation Interval'),
@@ -285,95 +212,7 @@ class ExcelSpecimen(ExcelParser):
 
         self.session.commit()
 
-    def parse_units(self):
-        table = self.tables.get('Units', DataFrame())
-        self.update_progress_label('Reading Units')
-        for _, row in table.iterrows():
-
-            params = {
-                'UnitsTypeCV': row.get('Units Type [CV]'),
-                'UnitsAbbreviation': row.get('Units Abbreviation'),
-                'UnitsName': row.get('Units Name'),
-                'UnitsLink': row.get('Units Link')
-            }
-
-            _ = self.get_or_create(Units, params, filter_by=['UnitsName', 'UnitsAbbreviation', 'UnitsTypeCV'],
-                                   check_fields=['UnitsTypeCV'])
-
-        self._updateGauge(table.shape[0])
-
-    def parse_people_and_orgs(self):
-
-        self.update_progress_label('Reading Organizations')
-
-        organization_table = self.tables.get('Organizations', DataFrame())
-        for _, row in organization_table.iterrows():
-            params = {
-                'OrganizationTypeCV': row.get('Organization Type [CV]'),
-                'OrganizationCode': row.get('Organization Code'),
-                'OrganizationName': row.get('Organization Name'),
-                'OrganizationDescription': row.get('Organization Description'),
-                'OrganizationLink': row.get('Organization Link'),
-            }
-
-            org = self.get_or_create(Organizations, params, filter_by='OrganizationName', commit=False)
-            self.orgs[row.get('Organization Name')] = org  # save this for later when we create Affiliations
-
-            self._updateGauge()
-
-        self.session.commit()
-
-
-        # Create Person and Affiliation objects
-
-        self.update_progress_label('Reading People')
-
-        people_table = self.tables.get('People', DataFrame())
-        for _, row in people_table.iterrows():  # type: (any, DataFrame)
-
-            row.fillna(value='', inplace=True)  # replace NaN values with empty string
-
-            person_params = {
-                'PersonFirstName': row.get('First Name'),
-                'PersonLastName': row.get('Last Name'),
-                'PersonMiddleName': row.get('Middle Name')
-            }
-
-            person = self.get_or_create(People, person_params)
-
-            aff_params = {
-                'AffiliationStartDate': row.get('Affiliation Start Date'),
-                'AffiliationEndDate': row.get('Affiliation End Date'),
-                'PrimaryPhone': row.get('Primary Phone'),
-                'PrimaryEmail': row.get('Primary Email'),
-                'PrimaryAddress': row.get('Primary Address'),
-                'PersonLink': row.get('Person Link'),
-                'OrganizationObj': self.orgs.get(row.get('Organization Name')),
-                'PersonObj': person
-            }
-
-            _ = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
-
-            self._updateGauge()
-
-    def parse_processing_level(self):
-
-        self.update_progress_label('Reading ProcessingLevels table')
-
-        table = self.tables.get('ProcessingLevels', DataFrame())
-        for _, row in table.iterrows():
-
-            params = {
-                'ProcessingLevelCode': row.get('Processing Level Code'),
-                'Definition': row.get('Definition'),
-                'Explanation': row.get('Explanation')
-            }
-
-            _ = self.get_or_create(ProcessingLevels, params, filter_by=['ProcessingLevelCode'])
-
-            self._updateGauge()
-
-    def parse_sites_table(self):
+    def parse_sites(self):
 
         elevation_datum = self.get_named_range_cell_value('ElevationDatum')
 
@@ -387,49 +226,30 @@ class ExcelSpecimen(ExcelParser):
         for _, row in table.iterrows():
 
             params = {
-                'SamplingFeatureUUID': str(uuid4()),  # Adding UUID in excel templates is redundant
+                'SamplingFeatureUUID': row.get('Sampling Feature UUID', str(uuid4())),
                 'SamplingFeatureCode': row.get('Sampling Feature Code'),
+                'SamplingFeatureTypeCV': 'Site',
+                'SiteTypeCV': row.get('Site Type'),
+                'Latitude': row.get('Latitude'),
+                'Longitude': row.get('Longitude'),
+                'SpatialReferenceObj': spatial_ref
+            }
+
+            assert (all(params.values()))
+
+            params.update({
                 'SamplingFeatureName': row.get('Sampling Feature Name'),
                 'SamplingFeatureDescription': row.get('Sampling Feature Description'),
                 'FeatureGeometryWKT': row.get('Feature Geometry WKT'),
                 'Elevation_m': row.get('Elevation_m'),
-                'SamplingFeatureTypeCV': 'Site',
-                'SiteTypeCV': row.get('Site Type [CV]'),
-                'Latitude': row.get('Latitude'),
-                'Longitude': row.get('Longitude'),
                 'ElevationDatumCV': elevation_datum,
-                'SpatialReferenceObj': spatial_ref
-            }
+            })
 
-            self.sites[params.get('SamplingFeatureCode', '').lower()] = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'], commit=False)
+            self.sites[params.get('SamplingFeatureCode').lower()] = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'], commit=False)
 
         self.session.commit()
 
         self._updateGauge(table.shape[0])
-
-    def parse_spatial_reference(self):
-        """
-        Parse spatial references
-        :return: None
-        """
-
-        table = self.tables.get('SpatialReferences', DataFrame())
-
-        self.update_progress_label('Reading SpatialReferences table')
-
-        for _, row in table.iterrows():
-
-            params = {
-                'SRSCode': row.get('SRSCode'),
-                'SRSName': row.get('SRSName'),
-                'SRSDescription': row.get('SRSDescription'),
-                'SRSLink': row.get('SRSLink'),
-            }
-
-            self.spatial_references[row.get('SRSName', '').lower()] = self.get_or_create(SpatialReferences, params, filter_by=['SRSCode'], commit=False)
-
-        self.session.commit()
-
 
     def parse_specimens(self):
         """
@@ -479,16 +299,15 @@ class ExcelSpecimen(ExcelParser):
 
             # Finally, create the SamplingFeatures specimen object for this row.
             params = {
-                # 'SamplingFeatureUUID': row.get('Sampling Feature UUID'),
-                'SamplingFeatureUUID': str(uuid4()),
+                'SamplingFeatureUUID': row.get('Sampling Feature UUID'),
                 'SamplingFeatureCode': row.get('Sampling Feature Code'),
                 'SamplingFeatureName': row.get('Sampling Feature Name'),
                 'SamplingFeatureDescription': row.get('Sampling Feature Description'),
                 'SamplingFeatureTypeCV': 'Specimen',
-                'SpecimenMediumCV': row.get('Specimen Medium [CV]'),
+                'SpecimenMediumCV': row.get('Specimen Medium'),
                 'IsFieldSpecimen': row.get('Is Field Specimen?'),
                 'ElevationDatumCV': 'Unknown',
-                'SpecimenTypeCV': row.get('Specimen Type [CV]')
+                'SpecimenTypeCV': row.get('Specimen Type')
             }
 
             sampling_feature = self.get_or_create(Specimens, params, filter_by=['SamplingFeatureCode'], commit=False)
@@ -518,7 +337,7 @@ class ExcelSpecimen(ExcelParser):
 
         self.session.commit()
 
-    def parse_methods(self):
+    def parse_methods(self, table=None):
         """
         Parse Methods recorded in the excel template
 
@@ -532,58 +351,4 @@ class ExcelSpecimen(ExcelParser):
         analysis_methods_table = self.tables.get('SpecimenAnalysisMethods')
         table = collections_method_table.append(analysis_methods_table)  # type: DataFrame
 
-        # Force values in 'Method Code' column to be strings
-        table['Method Code'] = table['Method Code'].astype(str)
-
-        self.update_progress_label('Reading Methods table')
-
-        for _, row in table.iterrows():
-
-            self.methods[row.get('Method Code', '').lower()] = self.parse_method(**row)
-
-        self.session.commit()
-
-        self._updateGauge(table.shape[0])
-
-    def parse_method(self, **kwargs):
-
-        org = self.orgs.get(kwargs.get('Organization Name'))
-
-        params = {
-            'MethodTypeCV': kwargs.get('Method Type [CV]'),
-            'MethodCode': kwargs.get('Method Code'),
-            'MethodName': kwargs.get('Method Name'),
-            'OrganizationObj': org
-        }
-
-        # check if params has required fields
-        assert all(params.values()), 'Values = %s ' % str(params.values())
-
-        # After checking for required fields, add the non required field
-        params.update(MethodLink=kwargs.get('MethodLink'), MethodDescription=kwargs.get('Method Description'))
-
-        return self.get_or_create(Methods, params, filter_by='MethodCode', commit=False)
-
-
-    def parse_variables(self):
-
-        table = self.tables.get('Variables', DataFrame())
-
-        self.update_progress_label('Reading Variables table')
-
-        for _, row in table.iterrows():
-
-            params = {
-                'VariableTypeCV': row.get('Variable Type [CV]'),
-                'VariableCode': row.get('Variable Code'),
-                'VariableNameCV': row.get('Variable Name [CV]'),
-                'VariableDefinition': row.get('Variable Definition'),
-                'SpeciationCV': row.get('Speciation [CV]'),
-                'NoDataValue': row.get('No Data Value')
-            }
-
-            _ = self.get_or_create(Variables, params, filter_by=['VariableCode'], check_fields=['NoDataValue'], commit=False)
-
-        self.session.commit()
-
-        self._updateGauge(table.shape[0])
+        super(ExcelSpecimen, self).parse_methods(table=table)

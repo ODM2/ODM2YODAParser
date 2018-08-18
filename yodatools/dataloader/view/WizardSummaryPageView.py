@@ -10,7 +10,7 @@ class WizardSummaryPageView(wx.Panel):
         self.gauge_label = wx.StaticText(self, wx.ID_ANY, '')
 
         self.output = wx.TextCtrl(self, wx.ID_ANY, '', style=wx.TE_MULTILINE | wx.TE_READONLY)
-        self.output.SetCursor(wx.StockCursor(wx.CURSOR_ARROW))
+        self.output.SetCursor(wx.Cursor(wx.CURSOR_ARROW))
 
         # Sizers
         vbox = wx.BoxSizer(wx.VERTICAL)

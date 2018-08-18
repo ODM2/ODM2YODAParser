@@ -1,8 +1,17 @@
 import os
-import openpyxl
+import time
+from datetime import datetime
+import string
+from collections import defaultdict
+from uuid import uuid4
+
+import pandas as pd
+from pandas import DataFrame
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
+from openpyxl.worksheet.worksheet import Worksheet
 
+from .ExcelParser import ExcelParser
 from odm2api.models import \
     (DataSets,
      Citations,
@@ -29,12 +38,8 @@ from odm2api.models import \
 
 
 
-import time
-import string
 
-import pandas as pd
 
-from .ExcelParser import ExcelParser
 
 
 class ExcelTimeseries(ExcelParser):
@@ -43,28 +48,36 @@ class ExcelTimeseries(ExcelParser):
     def __init__(self, input_file, session_factory, **kwargs):
         super(ExcelTimeseries, self).__init__(input_file, session_factory, **kwargs)
 
-    def _flush(self):
-        try:
-            self.session.flush()
-        except IntegrityError:
-            self.session.rollback()
+        self.sampling_features = defaultdict(lambda: None)
 
-    def parse(self):
+    def _init_data(self, file_path):
+        """
+        Reads the "Data Values" worksheet into a DataFrame and adds it to `self.tables`.
 
-        self.tables = self.get_table_name_ranges()
+        Values in the "Data Values" worksheet are not formatted as an excel table because
+        users can add any number or combination of column names they deem necessary,
+        making it basically impossible to create a standardized template.
+
+        See https://github.com/ODM2/YODA-File/tree/master/examples/time_series for examples.
+        """
+        super(ExcelTimeseries, self)._init_data(file_path)
+
+        sheet = self.workbook.get_sheet_by_name('Data Values')  # type: Worksheet
+        datavalue_generator = self.__generate_data_values(sheet.iter_rows())
+
+        headers = next(datavalue_generator)
+
+        self.tables['DataValues'] = DataFrame([dv for dv in datavalue_generator], columns=headers)
+
+        self.workbook.close()
 
 
-        self.parse_affiliations()
-        self.parse_datasets()
-        self.parse_methods()
-        self.parse_variables()
-        self.parse_units()
-        self.parse_processing_level()
-        self.parse_sampling_feature()
-
-        # self.parse_specimens()
-        # self.parse_analysis_results()
-        self.parse_data_values()
+    def __generate_data_values(self, rows):
+        for row in rows:
+            dvals = [cell.value for cell in row]
+            if not any(dvals):
+                return
+            yield dvals
 
     def get_table_name_ranges(self):
         """
@@ -87,11 +100,24 @@ class ExcelTimeseries(ExcelParser):
         return table_name_range
 
     def get_range_address(self, named_range):
+        """
+        Depracated
+
+        :param named_range:
+        :return:
+        """
         if named_range is not None:
             return named_range.attr_text.split('!')[1].replace('$', '')
         return None
 
     def get_range_value(self, range_name, sheet):
+        """
+        Depracated
+
+        :param range_name:
+        :param sheet:
+        :return:
+        """
         value = None
         named_range = self.workbook.get_named_range(range_name)
         range_ = self.get_range_address(named_range)
@@ -99,27 +125,13 @@ class ExcelTimeseries(ExcelParser):
             value = sheet[range_].value
         return value
 
-    def _init_data(self, file_path):
-        self.workbook = openpyxl.load_workbook(file_path, read_only=True)
-
-        for ws in self.workbook.worksheets:
-            for table in getattr(ws, '_tables', []):
-                print(table.name)
-
-        self.name_ranges = self.workbook.get_named_ranges()
-        self.sheets = self.workbook.get_sheet_names()
-
-
-    def count_number_of_rows_to_parse(self, dimensions):
-        # http://stackoverflow.com/questions/1450897/python-removing-characters-except-digits-from-string
-        top, bottom = dimensions.replace('$', '').split(':')
-        all_ = string.maketrans('', '')
-        nodigs = all_.translate(all_, string.digits)
-        top = int(top.translate(all_, nodigs))
-        bottom = int(bottom.translate(all_, nodigs))
-        self.total_rows_to_read += (bottom - top)
-
     def get_sheet_and_table(self, sheet_name):
+        """
+        Depracated
+
+        :param sheet_name:
+        :return:
+        """
         if sheet_name not in self.tables:
             return [], []
         sheet = self.workbook.get_sheet_by_name(sheet_name)
@@ -127,347 +139,74 @@ class ExcelTimeseries(ExcelParser):
 
         return sheet, tables
 
+    def parse(self):
+        """
+        Parses the excel file read in self._init_data
+        :return: None
+        """
 
-    def parse_datasets(self):
+        start = time.time()
 
-        CONST_DATASET = 'Dataset Citation'
+        self.parse_people_and_orgs()
+        self.parse_datasets()
+        self.parse_methods()
+        self.parse_variables()
+        self.parse_units()
+        self.parse_processing_level()
+        self.parse_spatial_reference()
+        self.parse_sampling_features()
 
-        sheet, tables = self.get_sheet_and_table(CONST_DATASET)
+        # self.parse_specimens()
+        # self.parse_analysis_results()
+        self.parse_data_columns()
 
-        dataset = DataSets()
-        dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
-        dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
-        dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
-        dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
-        dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
-        self.session.add(dataset)
+        end = time.time()
 
-        self._flush()
+        hours, remainder = divmod(end - start, 3600)
+        minutes, seconds = divmod(remainder, 60)
 
-        self.dataset = dataset
-
-
-        citation = Citations()
-        citation.RelationshipTypeCV = self.get_range_value("DatasetCitationRelationship", sheet)
-        citation.Title = self.get_range_value("CitationTitle", sheet)
-        citation.Publisher = self.get_range_value("Publisher", sheet)
-        citation.PublicationYear = self.get_range_value("PublicationYear", sheet)
-        citation.CitationLink = self.get_range_value("CitationLink", sheet)
-        # citation.DOI
-        self.session.add(citation)
-
-        self._flush()
-
-
-        #TODO only do this if the citation is set
-        authors = []
-        author_order = 1
-        #this is for AuthorListInfo
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-            if table.name == "AuthorList_Table":
-                for row in cells:
-                    # Action By
-                    names = filter(None, row[1].value.split(' '))
-                    if len(names) > 2:
-                        last_name = names[2].strip()
-                    else:
-                        last_name = names[1].strip()
-                    first_name = names[0].strip()
-                    person = self.session.query(People).filter_by(PersonLastName=last_name,
-                                                                   PersonFirstName=first_name).first()
-
-                    author = AuthorLists()
-                    author.AuthorOrder = author_order
-                    author.PersonObj = person
-                    author.CitationObj = citation
-                    authors.append(author)
-                    author_order += 1
+        self.update_progress_label('Input completed in %s:%s:%s' % (int(hours), int(minutes), int(seconds)))
 
-                    self._updateGauge()
-
-        self.session.add_all(authors)
-
-        self._flush()
-
-    def parse_units(self):
-        CONST_UNITS = 'Units'
-
-        sheet, tables = self.get_sheet_and_table(CONST_UNITS)
-
-        if not len(tables):
-            print "No Units found"
-            return
+    def parse_sampling_features(self):
 
-        units = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+        self.update_progress_label('Reading Sampling Features table')
 
-            for row in cells:
-                unit = Units()
-                unit.UnitsTypeCV = row[0].value
-                unit.UnitsAbbreviation = row[1].value
-                unit.UnitsName = row[2].value
-                unit.UnitsLink = row[3].value
+        elevation_datum = self.get_named_range_cell_value('ElevationDatum')
+        latlon_datum = self.get_named_range_cell_value('LatLonDatum')
+        spatial_ref = self.spatial_references.get(latlon_datum.lower(), None)
 
-                # Finding the right CVUnitsType object only seems to be a problem with postgresql...
-                if self._engine.name == 'postgresql':
-                    unitstypecv = self.session.query(CVUnitsType)\
-                        .filter(func.lower(CVUnitsType.Name) == func.lower(unit.UnitsTypeCV))\
-                        .first()
+        table = self.tables.get('SamplingFeatures', DataFrame())
+        for _, row in table.iterrows():
 
-                    if unitstypecv:
-                        unit.UnitsTypeCV = unitstypecv.Name
-
-                if unit.UnitsTypeCV is not None:
-                    units.append(unit)
-
-                self._updateGauge()
+            params = {
+                'SamplingFeatureUUID': row.get('Sampling Feature UUID', str(uuid4())),
+                'SamplingFeatureTypeCV': row.get('Sampling Feature Type'),
+                'SamplingFeatureCode': row.get('Feature Code'),
+                'SiteTypeCV': row.get('Site Type'),
+                'Latitude': row.get('Latitude'),
+                'Longitude': row.get('Longitude'),
+                'SpatialReferenceObj': spatial_ref
+            }
 
-        self.session.add_all(units)
-        self.session.flush()
+            assert(all(params.values()))
 
-    def parse_affiliations(self):  # rename to Affiliations
-        SHEET_NAME = 'People and Organizations'
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
-
-        if not len(tables):
-            print "No affiliations found"
-            return []
-
-        def parse_organizations(org_table, session):
-            organizations = {}
-
-            cells = sheet[self.get_range_address(org_table)]
-            for row in cells:
-                org = Organizations()
-                org.OrganizationTypeCV = row[0].value
-                org.OrganizationCode = row[1].value
-                org.OrganizationName = row[2].value
-                org.OrganizationDescription = row[3].value
-                org.OrganizationLink = row[4].value
-                session.add(org)
-                organizations[org.OrganizationName] = org
-                self._updateGauge()
-
-            return organizations
-
-        def parse_authors(author_table):
-            authors = []
-            cells = sheet[self.get_range_address(author_table)]
-            for row in cells:
-                ppl = People()
-                org = Organizations()
-                aff = Affiliations()
-
-                ppl.PersonFirstName = row[0].value.strip()
-                ppl.PersonMiddleName = row[1].value
-                ppl.PersonLastName = row[2].value.strip()
-
-                org.OrganizationName = row[3].value
-                aff.AffiliationStartDate = row[4].value
-                # aff.AffiliationEndDate = row[6].value
-                # aff.PrimaryPhone = row[7].value
-                aff.PrimaryEmail = row[5].value
-                aff.PrimaryAddress = row[6].value
-                # aff.PersonLink = row[10].value
-
-                aff.OrganizationObj = org
-                aff.PersonObj = ppl
-
-                authors.append(aff)
-
-
-            return authors
-
-        # Combine table and authors
-
-        orgs = {}
-        affiliations = []
-        for table in tables:
-            if 'People_Table' == table.name:
-                affiliations = parse_authors(table)
-            else:
-                orgs = parse_organizations(table, self.session)
-
-        # self.session.flush()
-
-        for aff in affiliations:
-            if aff.OrganizationObj.OrganizationName in orgs:
-                aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
-
-        self.session.add_all(affiliations)
-
-        self._flush()
-
-    def parse_processing_level(self):
-        with self.session.no_autoflush:
-            CONST_PROC_LEVEL = 'Processing Levels'
-            sheet, tables = self.get_sheet_and_table(CONST_PROC_LEVEL)
-
-            if not len(tables):
-                print "No processing levels found"
-                return []
-
-            processing_levels = []
-            for table in tables:
-                cells = sheet[self.get_range_address(table)]
-
-                for row in cells:
-                    if row[0].value is not None:
-                        proc_lvl = ProcessingLevels()
-                        proc_lvl.ProcessingLevelCode = row[0].value
-                        proc_lvl.Definition = row[1].value
-                        proc_lvl.Explanation = row[2].value
-                        processing_levels.append(proc_lvl)
-
-                    self._updateGauge()
-
-            # return processing_levels
-            self.session.add_all(processing_levels)
-
-        self._flush()
-
-    def parse_sampling_feature(self):
-        with self.session.no_autoflush:
-            SHEET_NAME = 'Sampling Features'
-            sheet, tables = self.get_sheet_and_table(SHEET_NAME)
-
-            sites = []
-            cells = []
-            for table in tables:
-                cells = sheet[self.get_range_address(table)]
-
-            spatial_references = self.parse_spatial_reference()
-            elevation_datum = self.get_range_value("ElevationDatum", sheet)
-            spatial_ref_name = self.get_range_value("LatLonDatum", sheet)
-            spatial_references_obj = spatial_references[spatial_ref_name]
-
-            for row in cells:
-                if all([row[1].value, row[2].value, row[3].value]):# are all of the required elements present
-                    site = Sites()
-                    site.SamplingFeatureUUID = row[0].value
-                    site.SamplingFeatureTypeCV = row[1].value
-                    site.SamplingFeatureGeotypeCV = row[2].value
-                    site.SamplingFeatureCode = row[3].value
-                    site.SamplingFeatureName = row[4].value
-                    site.SamplingFeatureDescription = row[5].value
-                    site.FeatureGeometryWKT = row[6].value
-
-                    site.Elevation_m = row[7].value
-
-                    site.SiteTypeCV = row[10].value
-                    site.Latitude = row[11].value
-                    site.Longitude = row[12].value
-                    site.ElevationDatumCV = elevation_datum
-                    site.SpatialReferenceObj = spatial_references_obj
-
-                    sites.append(site)
-                    self._updateGauge()
-
-                self.session.add_all(sites)
-
-            self._flush()
-
-    def parse_spatial_reference(self):
-        # with self.session.no_autoflush:
-        SHEET_NAME = "SpatialReferences"
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
-
-        if not len(tables):
-            return []
-
-        spatial_references = {}
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-            for row in cells:
-                sr = SpatialReferences()
-                sr.SRSCode = row[0].value
-                sr.SRSName = row[1].value
-                sr.SRSDescription = row[2].value
-                sr.SRSLink = row[3].value
-
-                spatial_references[sr.SRSName] = sr
-
-        return spatial_references
-
-    def parse_methods(self):
-
-        with self.session.no_autoflush:
-
-            CONST_METHODS = "Methods"
-            sheet, tables = self.get_sheet_and_table(CONST_METHODS)
-
-            if not len(tables):
-                print "No methods found"
-                return []
-
-            for table in tables:
-                cells = sheet[self.get_range_address(table)]
-
-                for row in cells:
-                    method = Methods()
-                    method.MethodTypeCV = row[0].value
-                    method.MethodCode = row[1].value
-                    method.MethodName = row[2].value
-                    method.MethodDescription = row[3].value
-                    method.MethodLink = row[4].value
-
-                    # If organization does not exist then it returns None
-                    org = self.session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
-                    method.OrganizationObj = org
-
-                    if method.MethodCode:  # Cannot store empty/None objects
-                        self.session.add(method)
-
-                    self._updateGauge()
-
-        self._flush()
-
-    def parse_variables(self):
-        with self.session.no_autoflush:
-            CONST_VARIABLES = "Variables"
-
-            if CONST_VARIABLES not in self.tables:
-                print "No Variables found"
-                return []
-
-            sheet = self.workbook.get_sheet_by_name(CONST_VARIABLES)
-            tables = self.tables[CONST_VARIABLES]
-
-            for table in tables:
-                cells = sheet[self.get_range_address(table)]
-                for row in cells:
-                    var = Variables()
-                    var.VariableTypeCV = row[0].value
-                    var.VariableCode = row[1].value
-                    var.VariableNameCV = row[2].value
-                    var.VariableDefinition = row[3].value
-                    var.SpeciationCV = row[4].value
-
-                    # Finding the right CVUnitsType object only seems to be a problem with postgresql...
-                    if self._engine.name == 'postgresql':
-                        varnamecv = self.session.query(CVVariableName) \
-                            .filter(func.lower(CVVariableName.Name) == func.lower(var.VariableNameCV)) \
-                            .first()
-
-                        if varnamecv:
-                            var.VariableNameCV = varnamecv.Name
-
-                    if row[5].value is not None:
-                        if row[5].value == 'NULL':
-                            #TODO break somehow because not all required data is filled out
-                            print "All Variables must contain a valid No Data Value!"
-                            var.NoDataValue = None
-                        else:
-                            var.NoDataValue = row[5].value
-
-                    if var.NoDataValue is not None:  # NoDataValue cannot be None
-                        self.session.add(var)
-
-                    self._updateGauge()
-
-        self._flush()
+            params.update({
+                'ElevationDatumCV': elevation_datum,
+                'SamplingFeatureName': row.get('Feature Name'),
+                'SamplingFeatureDescription': row.get('Feature Description'),
+                'FeatureGeometryWKT': row.get('Feature Geometry'),
+                'Elevation_m': row.get('Elevation_m'),
+                'SamplingFeatureGeotypeCV': row.get('Feature Geo Type')
+            })
+
+            sf = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'], commit=False)
+            self.sampling_features[params.get('SamplingFeatureCode').lower()] = sf
+
+        self.session.commit()
+
+        self._updateGauge(table.shape[0])
+
+
 
     def is_valid(self, iterable):
         for element in iterable:
@@ -602,6 +341,126 @@ class ExcelTimeseries(ExcelParser):
 
         print "convert from cross tab to serial"
         return self.load_time_series_values(data_values, metadata)
+
+    def parse_data_columns(self):
+        """
+        Parses the 'DataColumns' table and 'Data Values' worksheet from a TimeSeries excel file.
+
+        Each row in 'DataColumns' corresponds to a TimeSeriesResults object, and each
+        column in 'Data Values' coresponds to several TimeSeriesResultValues objects.
+        Reference `http://odm2.github.io/ODM2/schemas/ODM2_Current/diagrams/ODM2Results.html`
+        for a visual of the database schema.
+
+        :return:
+        """
+        self.update_progress_label('Reading DataColumns table')
+
+        affiliations = defaultdict(lambda: None)
+
+        datacolumns = self.tables.get('DataColumns', DataFrame())
+        datavalues = self.tables.get('DataValues', DataFrame())
+
+        datetimes = datavalues.get('LocalDateTime').dt.to_pydatetime()
+        startdate = min(*datetimes)
+        enddate = max(*datetimes)
+        utcoffset = datavalues.get('UTCOffset').pop(0)
+        value_count = len(datavalues.index)
+
+        for index, row in datacolumns.iterrows():
+
+            # TODO: check that method exists
+            methcode = row.get('Method Code').lower()
+            method = self.methods.get(methcode)
+
+            # TODO: Check that sampling_feature exists
+            sfcode = row.get('Sampling Feature Code').lower()
+            sampling_feature = self.sampling_features.get(sfcode)
+
+            action = self.create_action(start_date=startdate,  # type: Actions
+                                        end_date=enddate,
+                                        utcoffset=utcoffset,
+                                        method=method)
+
+            ftraction = self.create_feature_action(sampling_feature=sampling_feature,  # type: FeatureActions
+                                                   action=action)
+
+            # get or create the Affiliations object
+            fullname = row.get('Data Collector')
+            if fullname not in affiliations:
+                names = self.parse_name(fullname)
+                affiliations[fullname] = self.session.query(Affiliations) \
+                    .join(People) \
+                    .filter(People.PersonLastName == names.get('last_name', '')) \
+                    .filter(People.PersonFirstName == names.get('first_name', '')) \
+                    .filter(People.PersonMiddleName == names.get('middle_name', '')) \
+                    .first()
+
+            actionby = self.create_action_by(affiliation=affiliations.get(fullname), action=action)
+
+            variable = self.variables.get(row.get('Variable Code').lower())
+            unit = self.units.get(row.get('Unit Name').lower())
+            processing_lvl = self.processing_levels.get(row.get('Processing Level'))
+            aggregation_unit = self.units.get(row.get('Time Aggregation Unit').lower())
+
+            if not all([variable, unit, processing_lvl, aggregation_unit]):
+                self.update_output_text('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
+
+            result = self.create(MeasurementResults, commit=False, **{
+                'AggregationStatisticCV': row.get('Aggregation Statistic'),
+                'ResultUUID': row.get('ResultUUID', str(uuid4())),
+                'FeatureActionObj': ftraction,
+                'ResultTypeCV': row.get('Result Type'),
+                'VariableObj': variable,
+                'UnitsObj': unit,
+                'ProcessingLevelObj': processing_lvl,
+                'StatusCV': "Unknown",
+                'SampledMediumCV': row.get('Sampled Medium'),
+                'ValueCount': len(row.index),
+                'ResultDateTime': startdate
+            })
+
+            # Create DataSetsResults object
+            _ = self.create(DataSetsResults, commit=False, **{
+                'DataSetObj': self.data_set,
+                'ResultObj': result
+            })
+
+            self._updateGauge()
+
+            # TODO: This is where you left off.
+            # Things to do:
+            #   1. see if this method works up to this point
+            #   2. do the magic of parsing datavalues
+            #   3. document stuff
+
+            dvcol = datavalues.get(row.get('Column Label'))
+
+    def parse_datavalues(self, datavalues):
+        pass
+
+
+    def create_action(self, start_date, end_date, utcoffset, method):  # type: (datetime, datetime, int, Methods) -> Actions
+        return self.create(Actions, commit=False, **{
+            'MethodObj': method,
+            'ActionTypeCV': "Observation",
+            'BeginDateTime': start_date,
+            'BeginDateTimeUTCOffset': utcoffset,
+            'EndDateTime': end_date,
+            'EndDateTimeUTCOffset': utcoffset
+        })
+
+    def create_feature_action(self, sampling_feature, action):  # type: (SamplingFeatures, Actions) -> FeatureActions
+        return self.create(FeatureActions, commit=False, **{
+            'SamplingFeatureObj': sampling_feature,
+            'ActionObj': action
+        })
+
+    def create_action_by(self, affiliation, action):  # type: (Affiliations, Actions) -> ActionBy
+        return self.create(ActionBy, commit=False, **{
+            'AffiliationObj': affiliation,
+            'ActionObj': action,
+            'IsActionLead': True
+        })
 
     def load_time_series_values(self, cross_tab, meta_dict):
         """

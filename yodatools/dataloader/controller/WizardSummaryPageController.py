@@ -25,10 +25,10 @@ class WizardSummaryPageController(WizardSummaryPageView):
 
         except Exception as e:
 
+            pub.sendMessage('controller.error', message=e.message)
+
             if os.getenv('DEBUG', 'false') == 'true':
                 raise
-            else:
-                pub.sendMessage('controller.error', message=e.message)
 
     def __run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
 
