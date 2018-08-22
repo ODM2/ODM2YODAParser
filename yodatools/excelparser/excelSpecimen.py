@@ -20,7 +20,7 @@ from pubsub import pub
 from odm2api.models import *
 from yodatools.converter.Abstract import iInputs
 
-from .ExcelParser import ExcelParser
+from .excelParser import ExcelParser
 
 
 class ExcelSpecimen(ExcelParser):
@@ -69,8 +69,6 @@ class ExcelSpecimen(ExcelParser):
         :return: None
         """
 
-        # Keep a reference to affiliations and sampling features to reduce db queries
-        affiliations = defaultdict(lambda: None)
         sampling_features = defaultdict(lambda: None)
         collection_actions = defaultdict(lambda: None)
 
@@ -131,19 +129,19 @@ class ExcelSpecimen(ExcelParser):
 
             # Get the Affiliations object for ActionBy
             analyst_name = row.get('Analyst Name', '')
-            if analyst_name not in affiliations:
-                names = self.parse_name(analyst_name)
-                affiliations[analyst_name] = self.session.query(Affiliations) \
-                    .join(People) \
-                    .filter(People.PersonLastName == names.get('last_name', '')) \
-                    .filter(People.PersonFirstName == names.get('first_name', '')) \
-                    .filter(People.PersonMiddleName == names.get('middle_name', '')) \
-                    .first()
+            # if analyst_name not in affiliations:
+            #     names = self.parse_name(analyst_name)
+            #     affiliations[analyst_name] = self.session.query(Affiliations) \
+            #         .join(People) \
+            #         .filter(People.PersonLastName == names.get('last', '')) \
+            #         .filter(People.PersonFirstName == names.get('first', '')) \
+            #         .filter(People.PersonMiddleName == names.get('middle', '')) \
+            #         .first()
 
             # Create the ActionBy object
             _ = self.create(ActionBy, commit=False, **{
                 'IsActionLead': True,
-                'AffiliationObj': affiliations[analyst_name],
+                'AffiliationObj': self.affiliations.get(analyst_name),
                 'ActionObj': action,
             })
 

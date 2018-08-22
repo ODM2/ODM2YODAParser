@@ -4,14 +4,19 @@ from datetime import datetime
 import string
 from collections import defaultdict
 from uuid import uuid4
+# from threading import Thread
+from multiprocessing.dummy import Pool
 
+import numpy as np
 import pandas as pd
-from pandas import DataFrame
+from pandas import DataFrame, Series
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, ProgrammingError
+from sqlalchemy.orm.exc import NoResultFound
 from openpyxl.worksheet.worksheet import Worksheet
+from openpyxl.cell.cell import Cell
 
-from .ExcelParser import ExcelParser
+from .excelParser import ExcelParser
 from odm2api.models import \
     (DataSets,
      Citations,
@@ -37,11 +42,6 @@ from odm2api.models import \
      setSchema)
 
 
-
-
-
-
-
 class ExcelTimeseries(ExcelParser):
 
     # https://automatetheboringstuff.com/chapter12/
@@ -49,6 +49,7 @@ class ExcelTimeseries(ExcelParser):
         super(ExcelTimeseries, self).__init__(input_file, session_factory, **kwargs)
 
         self.sampling_features = defaultdict(lambda: None)
+        self.timeseriesresults = defaultdict(lambda: None)
 
     def _init_data(self, file_path):
         """
@@ -61,23 +62,39 @@ class ExcelTimeseries(ExcelParser):
         See https://github.com/ODM2/YODA-File/tree/master/examples/time_series for examples.
         """
         super(ExcelTimeseries, self)._init_data(file_path)
-
-        sheet = self.workbook.get_sheet_by_name('Data Values')  # type: Worksheet
-        datavalue_generator = self.__generate_data_values(sheet.iter_rows())
-
-        headers = next(datavalue_generator)
-
-        self.tables['DataValues'] = DataFrame([dv for dv in datavalue_generator], columns=headers)
-
+        self.__read_data_values()
         self.workbook.close()
 
+    def __read_data_values(self):
+        """
+        Reads the `Data Values` worksheet in a Time-Series excel template.
 
-    def __generate_data_values(self, rows):
+        Because the `Data Values` worksheet can contain a huge amount of data,
+        the worksheet is read and parsed row by row in `parse_data_values()`
+        :return:
+        """
+        sheet = self.workbook.get_sheet_by_name('Data Values')  # type: Worksheet
+        dvs = self.__dv_row_generator(sheet.iter_rows())
+        headers = next(dvs)
+        df = DataFrame([dv for dv in dvs], columns=headers)
+        df.dropna(how='all', inplace=True)
+
+        self.datavalue_count = df.shape[0]
+
+        self.tables['DataValues'] = df
+
+    def __dv_row_generator(self, rows):  # type: ([Cell]) -> generator
+        """
+        It... does... things...
+
+        :param rows: a list of Cells
+        :return: a generator object
+        """
         for row in rows:
-            dvals = [cell.value for cell in row]
-            if not any(dvals):
+            values = [cell.value for cell in row]
+            if not any(values):
                 return
-            yield dvals
+            yield values
 
     def get_table_name_ranges(self):
         """
@@ -147,6 +164,8 @@ class ExcelTimeseries(ExcelParser):
 
         start = time.time()
 
+        self._updateGauge(int(self.total_rows_to_read * 0.01))
+
         self.parse_people_and_orgs()
         self.parse_datasets()
         self.parse_methods()
@@ -155,10 +174,8 @@ class ExcelTimeseries(ExcelParser):
         self.parse_processing_level()
         self.parse_spatial_reference()
         self.parse_sampling_features()
-
-        # self.parse_specimens()
-        # self.parse_analysis_results()
         self.parse_data_columns()
+        self.parse_datavalues()
 
         end = time.time()
 
@@ -206,142 +223,6 @@ class ExcelTimeseries(ExcelParser):
 
         self._updateGauge(table.shape[0])
 
-
-
-    def is_valid(self, iterable):
-        for element in iterable:
-            if element.value is None:
-                return False
-        return True
-
-
-    def parse_data_values(self):
-        print "working on datavalues"
-        CONST_COLUMNS = "Data Columns"
-        if CONST_COLUMNS not in self.tables:
-            print "No Variables found"
-            return []
-
-        sheet = self.workbook.get_sheet_by_name(CONST_COLUMNS)
-        tables = self.tables[CONST_COLUMNS]
-
-        data_values = pd.read_excel(io=self.input_file, sheetname='Data Values')
-        start_date = data_values["LocalDateTime"].iloc[0].to_pydatetime()
-        end_date = data_values["LocalDateTime"].iloc[-1].to_pydatetime()
-        utc_offset = int(data_values["UTCOffset"][0])
-        value_count = len(data_values.index)
-
-        metadata = {}
-
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-
-            print "looping through datavalues"
-            for row in cells:
-                if self.is_valid(row):
-
-                    action = Actions()
-                    feat_act = FeatureActions()
-                    act_by = ActionBy()
-                    series_result = TimeSeriesResults()
-                    dataset_result = DataSetsResults()
-
-
-                    # Action
-                    method = self.session.query(Methods).filter_by(MethodCode=row[4].value).first()
-                    action.MethodObj = method
-                    #TODO ActionType
-                    action.ActionTypeCV = "Observation"
-                    action.BeginDateTime = start_date
-                    action.BeginDateTimeUTCOffset = utc_offset
-                    action.EndDateTime = end_date
-                    action.EndDateTimeUTCOffset = utc_offset
-
-                    # Feature Actions
-                    sampling_feature = self.session.query(SamplingFeatures)\
-                        .filter_by(SamplingFeatureCode=row[3].value)\
-                        .first()
-
-                    feat_act.SamplingFeatureObj = sampling_feature
-                    feat_act.ActionObj = action
-
-                    # Action By
-                    names = filter(None, row[5].value.split(' '))
-                    if len(names) > 2:
-                        last_name = names[2].strip()
-                    else:
-                        last_name = names[1].strip()
-                    first_name = names[0].strip()
-
-                    person = self.session.query(People).filter_by(PersonLastName=last_name, PersonFirstName=first_name).first()
-                    affiliations = self.session.query(Affiliations).filter_by(PersonID=person.PersonID).first()
-                    act_by.AffiliationObj = affiliations
-                    act_by.ActionObj = action
-                    act_by.IsActionLead = True
-
-
-                    # self.session.no_autoflush
-                    self.session.flush()
-
-                    self.session.add(action)
-                    self.session.flush()
-                    self.session.add(feat_act)
-                    self.session.add(act_by)
-                    # self.session.add(related_action)
-                    self.session.flush()
-                    # Measurement Result (Different from Measurement Result Value) also creates a Result
-                    variable = self.session.query(Variables).filter_by(VariableCode=row[7].value).first()
-
-
-                    units_for_result = self.session.query(Units).filter_by(UnitsName=row[8].value).first()
-                    proc_level = self.session.query(ProcessingLevels).filter_by(ProcessingLevelCode=str(row[9].value)).first()
-
-                    units_for_agg = self.session.query(Units).filter_by(UnitsName=row[12].value).first()
-
-                    # series_result.IntendedTimeSpacing = row[11].value
-                    # series_result.IntendedTimeSpacingUnitsObj = units_for_agg
-                    series_result.AggregationStatisticCV = row[13].value
-                    series_result.ResultUUID = row[2].value
-                    series_result.FeatureActionObj = feat_act
-                    series_result.ResultTypeCV = row[6].value
-                    series_result.VariableObj = variable
-                    series_result.UnitsObj = units_for_result
-                    series_result.ProcessingLevelObj = proc_level
-
-                    series_result.StatusCV = "Unknown"
-                    series_result.SampledMediumCV = row[10].value
-                    series_result.ValueCount = value_count
-
-                    series_result.ResultDateTime = start_date
-
-                    self.session.add(series_result)
-                    # self.session.flush()  # steph
-                    self.session.commit()  # me
-
-                    if self.dataset is not None:
-                        #DataSetsResults
-                        dataset_result.DataSetObj = self.dataset
-                        dataset_result.ResultObj = series_result
-                        self.session.add(dataset_result)
-
-                    # Timeseries Result Value Metadata
-
-                    metadata[row[1].value] = {
-                        'Result': series_result,
-                        'CensorCodeCV': row[14].value,
-                        'QualityCodeCV': row[15].value,
-                        'TimeAggregationInterval': row[11].value,
-                        'TimeAggregationIntervalUnitsObj': units_for_agg
-                    }
-
-                    # self.session.add(measure_result_value)
-                    self._flush()
-
-                    self._updateGauge()
-
-        print "convert from cross tab to serial"
-        return self.load_time_series_values(data_values, metadata)
-
     def parse_data_columns(self):
         """
         Parses the 'DataColumns' table and 'Data Values' worksheet from a TimeSeries excel file.
@@ -351,28 +232,29 @@ class ExcelTimeseries(ExcelParser):
         Reference `http://odm2.github.io/ODM2/schemas/ODM2_Current/diagrams/ODM2Results.html`
         for a visual of the database schema.
 
-        :return:
+        :return: None
         """
-        self.update_progress_label('Reading DataColumns table')
-
-        affiliations = defaultdict(lambda: None)
+        self.update_progress_label(message='Reading DataColumns table')
 
         datacolumns = self.tables.get('DataColumns', DataFrame())
-        datavalues = self.tables.get('DataValues', DataFrame())
+        datacolumns['Processing Level'] = datacolumns['Processing Level'].astype(int).astype(str)
 
-        datetimes = datavalues.get('LocalDateTime').dt.to_pydatetime()
+        utcoffset = int(self.tables['DataValues'].get('UTCOffset')[0])
+        datetimes = self.tables['DataValues'].get('LocalDateTime').dt.to_pydatetime()
         startdate = min(*datetimes)
         enddate = max(*datetimes)
-        utcoffset = datavalues.get('UTCOffset').pop(0)
-        value_count = len(datavalues.index)
+
+        row_count, _ = datacolumns.shape
 
         for index, row in datacolumns.iterrows():
 
-            # TODO: check that method exists
+            self._updateGauge(1, message='Reading DataColumns table row %s of %s' % (index + 1, row_count))
+
+            # TODO: check that `method` exists
             methcode = row.get('Method Code').lower()
             method = self.methods.get(methcode)
 
-            # TODO: Check that sampling_feature exists
+            # TODO: Check that `sampling_feature` exists
             sfcode = row.get('Sampling Feature Code').lower()
             sampling_feature = self.sampling_features.get(sfcode)
 
@@ -384,18 +266,9 @@ class ExcelTimeseries(ExcelParser):
             ftraction = self.create_feature_action(sampling_feature=sampling_feature,  # type: FeatureActions
                                                    action=action)
 
-            # get or create the Affiliations object
-            fullname = row.get('Data Collector')
-            if fullname not in affiliations:
-                names = self.parse_name(fullname)
-                affiliations[fullname] = self.session.query(Affiliations) \
-                    .join(People) \
-                    .filter(People.PersonLastName == names.get('last_name', '')) \
-                    .filter(People.PersonFirstName == names.get('first_name', '')) \
-                    .filter(People.PersonMiddleName == names.get('middle_name', '')) \
-                    .first()
-
-            actionby = self.create_action_by(affiliation=affiliations.get(fullname), action=action)
+            # Create the ActionsBy object
+            _ = self.create_action_by(affiliation=self.affiliations.get(row.get('Data Collector')),
+                                      action=action)
 
             variable = self.variables.get(row.get('Variable Code').lower())
             unit = self.units.get(row.get('Unit Name').lower())
@@ -403,11 +276,12 @@ class ExcelTimeseries(ExcelParser):
             aggregation_unit = self.units.get(row.get('Time Aggregation Unit').lower())
 
             if not all([variable, unit, processing_lvl, aggregation_unit]):
-                self.update_output_text('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
+                self._updateGauge('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
+                continue
 
-            result = self.create(MeasurementResults, commit=False, **{
+            result = self.create(TimeSeriesResults, commit=False, **{
                 'AggregationStatisticCV': row.get('Aggregation Statistic'),
-                'ResultUUID': row.get('ResultUUID', str(uuid4())),
+                'ResultUUID': row.get('ResultUUID'),
                 'FeatureActionObj': ftraction,
                 'ResultTypeCV': row.get('Result Type'),
                 'VariableObj': variable,
@@ -416,8 +290,11 @@ class ExcelTimeseries(ExcelParser):
                 'StatusCV': "Unknown",
                 'SampledMediumCV': row.get('Sampled Medium'),
                 'ValueCount': len(row.index),
-                'ResultDateTime': startdate
+                'ResultDateTime': startdate,
+                'ResultDateTimeUTCOffset': utcoffset
             })
+
+            self.timeseriesresults[row.get('ResultUUID')] = result
 
             # Create DataSetsResults object
             _ = self.create(DataSetsResults, commit=False, **{
@@ -425,95 +302,73 @@ class ExcelTimeseries(ExcelParser):
                 'ResultObj': result
             })
 
-            self._updateGauge()
+        self.session.commit()
 
-            # TODO: This is where you left off.
-            # Things to do:
-            #   1. see if this method works up to this point
-            #   2. do the magic of parsing datavalues
-            #   3. document stuff
+    def parse_datavalues(self):
 
-            dvcol = datavalues.get(row.get('Column Label'))
+        result_table = self.tables['DataColumns'].copy()  # type: DataFrame
+        result_table = result_table[['ResultUUID', 'Column Label', 'Censor Code', 'Quality Code', 'Time Aggregation Interval', 'Time Aggregation Unit']]
 
-    def parse_datavalues(self, datavalues):
-        pass
+        self.gauge.SetValue(0)
 
+        # for i in xrange(0, self.datavalue_count):
+        for i, series in self.tables.get('DataValues').iterrows():
+            # values = datavalues[i]
 
-    def create_action(self, start_date, end_date, utcoffset, method):  # type: (datetime, datetime, int, Methods) -> Actions
-        return self.create(Actions, commit=False, **{
-            'MethodObj': method,
-            'ActionTypeCV': "Observation",
-            'BeginDateTime': start_date,
-            'BeginDateTimeUTCOffset': utcoffset,
-            'EndDateTime': end_date,
-            'EndDateTimeUTCOffset': utcoffset
-        })
+            series.dropna(inplace=True)
 
-    def create_feature_action(self, sampling_feature, action):  # type: (SamplingFeatures, Actions) -> FeatureActions
-        return self.create(FeatureActions, commit=False, **{
-            'SamplingFeatureObj': sampling_feature,
-            'ActionObj': action
-        })
+            complete = float(i + 1) / float(self.datavalue_count)
+            self.update_progress_label('%s/%s' % (i + 1, self.datavalue_count))
+            self.gauge.SetValue(complete * 100)
 
-    def create_action_by(self, affiliation, action):  # type: (Affiliations, Actions) -> ActionBy
-        return self.create(ActionBy, commit=False, **{
-            'AffiliationObj': affiliation,
-            'ActionObj': action,
-            'IsActionLead': True
-        })
+            # series = Series(values, index=colnames)
+            # series = Series(row, index=colnames)
+            # series.dropna(inplace=True)
 
-    def load_time_series_values(self, cross_tab, meta_dict):
-        """
-        Loads TimeSeriesResultsValues into pandas DataFrame
-        """
+            localdt = series.get('LocalDateTime')
+            utcoffset = series.get('UTCOffset')
 
-        date_column = "LocalDateTime"
-        utc_column = "UTCOffset"
+            tsrvs = []
+            for _, result in result_table.iterrows():
+                label = result.get('Column Label')
+                uuid = result.get('ResultUUID')
 
-        cross_tab.set_index([date_column, utc_column], inplace=True)
+                tsr = self.timeseriesresults.get(uuid)
+                value = series.get(label)
 
-        serial = cross_tab.unstack(level=[date_column, utc_column])
+                assert(tsr is not None)
 
-        # add all the columns we need and clean up the dataframe
-        serial = serial.append(
-            pd.DataFrame(columns=['ResultID', 'CensorCodeCV', 'QualityCodeCV', 'TimeAggregationInterval',
-                                  'TimeAggregationIntervalUnitsID'])) \
-            .fillna(0) \
-            .reset_index() \
-            .rename(columns={0: 'DataValue'}) \
-            .rename(columns={date_column: 'ValueDateTime', 'UTCOffset': 'ValueDateTimeUTCOffset'}) \
-            .dropna()
+                censor_code = result.get('Censor Code')
+                quality_code = result.get('Quality Code')
+                timeagg_interval = result.get('Time Aggregation Interval')
+                aggregation_unit = self.units.get(result.get('Time Aggregation Unit').lower())
 
-        for k, v in meta_dict.iteritems():
-            serial.ix[serial.level_0 == k, 'ResultID'] = v["Result"].ResultID
-            serial.ix[serial.level_0 == k, 'CensorCodeCV'] = v["CensorCodeCV"]
-            serial.ix[serial.level_0 == k, 'QualityCodeCV'] = v["QualityCodeCV"]
-            serial.ix[serial.level_0 == k, 'TimeAggregationInterval'] = v["TimeAggregationInterval"]
-            serial.ix[serial.level_0 == k, 'TimeAggregationIntervalUnitsID'] = v["TimeAggregationIntervalUnitsObj"].UnitsID
+                tsrvs.append(TimeSeriesResultValues(
+                    ResultObj=tsr,
+                    DataValue=value,
+                    ValueDateTime=localdt,
+                    ValueDateTimeUTCOffset=utcoffset,
+                    CensorCodeCV=censor_code,
+                    QualityCodeCV=quality_code,
+                    TimeAggregationInterval=timeagg_interval,
+                    TimeAggregationIntervalUnitsObj=aggregation_unit
+                ))
 
-        del serial['level_0']
+            self.__commit_tsrvs(tsrvs)
 
+        self._flush()
 
-        if ':memory:' not in repr(self._engine):
-            # ':memory:' is part of the session engine connection string
-            # when using sqlite in-memory storage (as opposed to a file).
-            # If the session engine is connected to a database NOT stored
-            # in memory, the connection must be closed before 'serial.to_sql'
-            # can connect to the database.
-            self.session.close()
+    def __commit_tsrvs(self, tsrvs):
+        self.session.add_all(tsrvs)
+        try:
+            self.session.commit()
+        except (IntegrityError, ProgrammingError):
+            self.session.rollback()
 
-        if 'postgresql' in repr(self._engine):
-            # Column names are lower cased when using postgresql...
-            serial.columns = map(str.lower, serial.columns)
-
-        setSchema(self._engine)
-        serial.to_sql(TimeSeriesResultValues.__tablename__,
-                      schema=TimeSeriesResultValues.__table_args__['schema'],
-                      if_exists='append',
-                      chunksize=1000,
-                      con=self._engine,
-                      index=False)
-
-        self.session.flush()
-
-        return serial
+            for tsrv in tsrvs:
+                self.session.add(tsrv)
+                try:
+                    self.session.commit()
+                except (IntegrityError, ProgrammingError) as e:
+                    self.update_output_text('Error (row %s): %s' % (i, e.message))
+                    self.session.rollback()

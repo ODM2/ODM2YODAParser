@@ -2,11 +2,13 @@ import os
 import re
 from collections import defaultdict
 from uuid import uuid4
+import wx
 
 from pubsub import pub
 from pandas import isnull, DataFrame
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.orm.session import Session
 import openpyxl
 from openpyxl.worksheet.table import Table
 from openpyxl.workbook.workbook import Workbook
@@ -58,10 +60,10 @@ class ExcelParser(object):
 
         self.input_file = input_file
 
-        self.session = session_factory.getSession()
+        self.session = session_factory.getSession()  # type: Session
         self.engine = session_factory.engine
 
-        self.gauge = kwargs.get('gauge', None)
+        self.gauge = kwargs.get('gauge', None)  # type: wx.Gauge
 
         self.total_rows_to_read = 0
         self.rows_read = 0
@@ -71,6 +73,7 @@ class ExcelParser(object):
         self.tables = {}
 
         self.orgs = defaultdict(lambda: None)
+        self.affiliations = defaultdict(lambda: None)
         self.data_set = defaultdict(lambda: None)
         self.methods = defaultdict(lambda: None)
         self.variables = defaultdict(lambda: None)
@@ -111,6 +114,14 @@ class ExcelParser(object):
                 self.tables[table.name.strip()] = DataFrame(data, columns=headers).dropna(how='all')
 
         self.update_progress_label('Calculating total row size')
+
+        # Dropping these tables because they aren't used and mess up the
+        # total row count calculation
+        del self.tables['AuthorList']
+        del self.tables['ExternalIDOrgs']
+        del self.tables['ControlledVocabularies']
+        del self.tables['ExternalIdentifiers']
+
         for key, table in self.tables.iteritems():
             self.total_rows_to_read += table.shape[0]
 
@@ -178,11 +189,14 @@ class ExcelParser(object):
 
             self.session.rollback()
 
-    def _updateGauge(self, rows_read=1):
+    def _updateGauge(self, rows_read=1, message=None):
         """
         Updates the gauge based on `self.rows_read`
         :return: None
         """
+        if message:
+            self.update_progress_label(message)
+
         # Objects are passed by reference in Python :)
         if not getattr(self, 'gauge', None):  # type: wx.Gauge
             return  # No gauge was passed in, but that's ok :)
@@ -267,14 +281,10 @@ class ExcelParser(object):
             values = [firstname] + values + [lastname]
 
         names = {
-            'first_name': values[0],
-            'last_name': values[-1]
+            'first': values[0],
+            'last': values[-1],
+            'middle': ' '.join(values[1:-1])
         }
-
-        middle = ' '.join(values[1:-1])
-        if len(middle):
-            names.update(middle_name=middle)
-
 
         return names
 
@@ -283,6 +293,42 @@ class ExcelParser(object):
 
     def update_output_text(self, message):
         pub.sendMessage('controller.update_output_text', message='%s\n' % message)
+
+    def create_action(self, start_date, end_date, utcoffset, method, commit=False):  # type: (datetime, datetime, int, Methods, bool) -> Actions
+        """
+        Creates an ODM2 Actions object
+
+        :param start_date: datetime like
+        :param end_date: datetime like
+        :param utcoffset: int like
+        :param method: Methods object
+        :param commit: bool
+        :return:
+        """
+
+        utcoffset = int(utcoffset)
+
+        return self.create(Actions, commit=commit, **{
+            'MethodObj': method,
+            'ActionTypeCV': "Observation",
+            'BeginDateTime': start_date,
+            'BeginDateTimeUTCOffset': utcoffset,
+            'EndDateTime': end_date,
+            'EndDateTimeUTCOffset': -7
+        })
+
+    def create_feature_action(self, sampling_feature, action, commit=False):  # type: (SamplingFeatures, Actions, bool) -> FeatureActions
+        return self.create(FeatureActions, commit=commit, **{
+            'SamplingFeatureObj': sampling_feature,
+            'ActionObj': action
+        })
+
+    def create_action_by(self, affiliation, action, commit=False):  # type: (Affiliations, Actions, bool) -> ActionBy
+        return self.create(ActionBy, commit=commit, **{
+            'AffiliationObj': affiliation,
+            'ActionObj': action,
+            'IsActionLead': True
+        })
 
     def parse_people_and_orgs(self):
 
@@ -338,7 +384,8 @@ class ExcelParser(object):
                 'PersonObj': person
             }
 
-            _ = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
+            aff = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
+            self.affiliations[row.get('Full Name')] = aff
 
             self._updateGauge()
 
