@@ -60,10 +60,10 @@ class ExcelParser(object):
 
         self.input_file = input_file
 
+        self.__session_factory = session_factory
+
         self.session = session_factory.getSession()  # type: Session
         self.engine = session_factory.engine
-
-        self.gauge = kwargs.get('gauge', None)  # type: wx.Gauge
 
         self.total_rows_to_read = 0
         self.rows_read = 0
@@ -93,8 +93,12 @@ class ExcelParser(object):
         for ws in self.workbook.worksheets:
 
             tables = getattr(ws, '_tables', [])
-
             for table in tables:  # type: Table
+
+                if table.name in ['AuthorList', 'ExternalIDOrgs', 'ControlledVocabularies', 'ExternalIdentifiers']:
+                    # skip these tables because they do not (currently) need to be parsed
+                    # and they mess up the total row count calculation
+                    continue
 
                 self.update_progress_label('Loading table data: %s' % table.name)
 
@@ -114,19 +118,11 @@ class ExcelParser(object):
                 self.tables[table.name.strip()] = DataFrame(data, columns=headers).dropna(how='all')
 
         self.update_progress_label('Calculating total row size')
-
-        # Dropping these tables because they aren't used and mess up the
-        # total row count calculation
-        del self.tables['AuthorList']
-        del self.tables['ExternalIDOrgs']
-        del self.tables['ControlledVocabularies']
-        del self.tables['ExternalIdentifiers']
-
-        for key, table in self.tables.iteritems():
-            self.total_rows_to_read += table.shape[0]
+        self.total_rows_to_read = sum([table.shape[0] for table in self.tables.values()])
 
     def get_or_create(self, model, values, check_fields=None, filter_by=None, commit=True):  # type: (Base, dict, [str], str|[str], bool) -> Base
         """
+        Gets an existing instance of <model> or creates a new one if not found
 
         :param model: The model from odm2api.models used to create the object
         :param values: A dict containing the fields to insert into the database (given the record does not exist).
@@ -164,6 +160,14 @@ class ExcelParser(object):
             return self.create(model, commit=commit, **values)
 
     def create(self, model, commit=True, **kwargs):
+        """
+        Creates an instance of <model>
+
+        :param model: an ODM2 model
+        :param commit: boolean, commits the newly created object if true
+        :param kwargs: keyword arguments used to create <model>
+        :return:
+        """
         instance = model(**kwargs)
         self.session.add(instance)
 
@@ -173,6 +177,13 @@ class ExcelParser(object):
         return instance
 
     def get(self, model, **kwargs):
+        """
+        Gets a single instance of an ODM2 model
+
+        :param model: class of the model to query
+        :param kwargs: values to use in query
+        :return: an instance of <model>
+        """
         try:
             return self.session.query(model).filter_by(**kwargs).one()
         except NoResultFound:
@@ -189,24 +200,33 @@ class ExcelParser(object):
 
             self.session.rollback()
 
-    def _updateGauge(self, rows_read=1, message=None):
+    def update_progress_label(self, message, label_pos=1):
+        pub.sendMessage('controller.update_progress_label', message=message, label_pos=label_pos)
+
+    def update_output_text(self, message):
+        pub.sendMessage('controller.update_output_text', message='%s\n' % message)
+
+    def update_gauge(self, rows_read=1, message=None, gauge_pos=1, label_pos=1, setvalue=None):
         """
         Updates the gauge based on `self.rows_read`
         :return: None
         """
-        if message:
-            self.update_progress_label(message)
+        if message is not None:
+            self.update_progress_label(message, label_pos=label_pos)
 
-        # Objects are passed by reference in Python :)
-        if not getattr(self, 'gauge', None):  # type: wx.Gauge
-            return  # No gauge was passed in, but that's ok :)
+        if setvalue is not None:
+            value = setvalue
 
-        self.rows_read += rows_read
-        try:
-            value = (float(self.rows_read) / float(self.total_rows_to_read)) * 100.0
-            self.gauge.SetValue(value)
-        except ZeroDivisionError:
-            pass
+        else:
+
+            self.rows_read += rows_read
+
+            try:
+                value = (float(self.rows_read) / float(self.total_rows_to_read)) * 100.0
+            except ZeroDivisionError:
+                return
+
+        pub.sendMessage('controller.update_gauge', value=value, gauge_pos=gauge_pos)
 
     def get_named_range(self, sheet, coord):
         """
@@ -288,12 +308,6 @@ class ExcelParser(object):
 
         return names
 
-    def update_progress_label(self, message):
-        pub.sendMessage('controller.update_progress_label', message=message)
-
-    def update_output_text(self, message):
-        pub.sendMessage('controller.update_output_text', message='%s\n' % message)
-
     def create_action(self, start_date, end_date, utcoffset, method, commit=False):  # type: (datetime, datetime, int, Methods, bool) -> Actions
         """
         Creates an ODM2 Actions object
@@ -352,7 +366,7 @@ class ExcelParser(object):
             org = self.get_or_create(Organizations, params, filter_by='OrganizationName', commit=False)
             self.orgs[row.get('Organization Name')] = org  # save this for later when we create Affiliations
 
-            self._updateGauge()
+            self.update_gauge()
 
         self.session.commit()
 
@@ -387,7 +401,7 @@ class ExcelParser(object):
             aff = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
             self.affiliations[row.get('Full Name')] = aff
 
-            self._updateGauge()
+            self.update_gauge()
 
     def parse_datasets(self):
 
@@ -431,7 +445,7 @@ class ExcelParser(object):
 
         self.session.commit()
 
-        self._updateGauge(table.shape[0])
+        self.update_gauge(table.shape[0])
 
     def parse_method(self, **kwargs):
 
@@ -479,7 +493,7 @@ class ExcelParser(object):
 
         self.session.commit()
 
-        self._updateGauge(table.shape[0])
+        self.update_gauge(table.shape[0])
 
     def parse_units(self):
         self.update_progress_label('Reading Units')
@@ -501,7 +515,7 @@ class ExcelParser(object):
                                       check_fields=['UnitsTypeCV'])
             self.units[params.get('UnitsName').lower()] = unit
 
-        self._updateGauge(table.shape[0])
+        self.update_gauge(table.shape[0])
 
     def parse_spatial_reference(self):
         """
@@ -549,4 +563,4 @@ class ExcelParser(object):
             plvl = self.get_or_create(ProcessingLevels, params, filter_by=['ProcessingLevelCode'])
             self.processing_levels[params.get('ProcessingLevelCode')] = plvl
 
-            self._updateGauge()
+            self.update_gauge()

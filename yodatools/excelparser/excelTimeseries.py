@@ -1,22 +1,24 @@
-import os
 import time
-from datetime import datetime
-import string
 from collections import defaultdict
 from uuid import uuid4
-# from threading import Thread
-from multiprocessing.dummy import Pool
+import threading
+from threading import Thread
+from multiprocessing import Process
+import functools
 
+import wx
+from pubsub import pub
 import numpy as np
 import pandas as pd
 from pandas import DataFrame, Series
-from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError, ProgrammingError
 from sqlalchemy.orm.exc import NoResultFound
+from sqlalchemy.orm import Session
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.cell.cell import Cell
 
 from .excelParser import ExcelParser
+
 from odm2api.models import \
     (DataSets,
      Citations,
@@ -39,7 +41,41 @@ from odm2api.models import \
      TimeSeriesResultValues,
      CVUnitsType,
      CVVariableName,
-     setSchema)
+     setSchema,
+     Base)
+
+from odm2api.ODMconnection import dbconnection
+
+print_lock = threading.Lock()
+
+
+def update_output_text(message):
+    message += '\n'
+    pub.sendMessage('controller.update_output_text', message=message)
+
+
+def commit_tsrvs(conn, tsrvs):
+
+    session_factory = dbconnection.createConnectionFromString(conn)
+    engine = session_factory.engine
+    setSchema(engine)
+    Base.metadata.create_all(engine)
+
+    session = session_factory.getSession()
+
+    session.add_all(tsrvs)
+    try:
+        session.commit()
+    except (IntegrityError, ProgrammingError):
+        session.rollback()
+        for i in xrange(0, len(tsrvs)):
+            tsrv = tsrvs[i]
+            session.add(tsrv)
+            try:
+                session.commit()
+            except (IntegrityError, ProgrammingError) as e:
+                session.rollback()
+                update_output_text('Error: %s' % e.message)
 
 
 class ExcelTimeseries(ExcelParser):
@@ -48,8 +84,14 @@ class ExcelTimeseries(ExcelParser):
     def __init__(self, input_file, session_factory, **kwargs):
         super(ExcelTimeseries, self).__init__(input_file, session_factory, **kwargs)
 
+        self.conn = kwargs.get('conn', None)
+
+        self.__session_factory = session_factory
+
         self.sampling_features = defaultdict(lambda: None)
         self.timeseriesresults = defaultdict(lambda: None)
+
+
 
     def _init_data(self, file_path):
         """
@@ -67,10 +109,7 @@ class ExcelTimeseries(ExcelParser):
 
     def __read_data_values(self):
         """
-        Reads the `Data Values` worksheet in a Time-Series excel template.
-
-        Because the `Data Values` worksheet can contain a huge amount of data,
-        the worksheet is read and parsed row by row in `parse_data_values()`
+        Reads the `Data Values` worksheet in a Time-Series excel file.
         :return:
         """
         sheet = self.workbook.get_sheet_by_name('Data Values')  # type: Worksheet
@@ -78,9 +117,6 @@ class ExcelTimeseries(ExcelParser):
         headers = next(dvs)
         df = DataFrame([dv for dv in dvs], columns=headers)
         df.dropna(how='all', inplace=True)
-
-        self.datavalue_count = df.shape[0]
-
         self.tables['DataValues'] = df
 
     def __dv_row_generator(self, rows):  # type: ([Cell]) -> generator
@@ -164,7 +200,7 @@ class ExcelTimeseries(ExcelParser):
 
         start = time.time()
 
-        self._updateGauge(int(self.total_rows_to_read * 0.01))
+        self.update_gauge(int(self.total_rows_to_read * 0.01))
 
         self.parse_people_and_orgs()
         self.parse_datasets()
@@ -221,7 +257,7 @@ class ExcelTimeseries(ExcelParser):
 
         self.session.commit()
 
-        self._updateGauge(table.shape[0])
+        self.update_gauge(table.shape[0])
 
     def parse_data_columns(self):
         """
@@ -234,6 +270,8 @@ class ExcelTimeseries(ExcelParser):
 
         :return: None
         """
+
+
         self.update_progress_label(message='Reading DataColumns table')
 
         datacolumns = self.tables.get('DataColumns', DataFrame())
@@ -248,7 +286,7 @@ class ExcelTimeseries(ExcelParser):
 
         for index, row in datacolumns.iterrows():
 
-            self._updateGauge(1, message='Reading DataColumns table row %s of %s' % (index + 1, row_count))
+            self.update_gauge(1, message='Reading DataColumns table row %s of %s' % (index + 1, row_count))
 
             # TODO: check that `method` exists
             methcode = row.get('Method Code').lower()
@@ -276,7 +314,7 @@ class ExcelTimeseries(ExcelParser):
             aggregation_unit = self.units.get(row.get('Time Aggregation Unit').lower())
 
             if not all([variable, unit, processing_lvl, aggregation_unit]):
-                self._updateGauge('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
+                self.update_gauge('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
                 continue
 
             result = self.create(TimeSeriesResults, commit=False, **{
@@ -306,69 +344,143 @@ class ExcelTimeseries(ExcelParser):
 
     def parse_datavalues(self):
 
+        self.update_gauge(message='Parsing Data Values', setvalue=0)
+
         result_table = self.tables['DataColumns'].copy()  # type: DataFrame
         result_table = result_table[['ResultUUID', 'Column Label', 'Censor Code', 'Quality Code', 'Time Aggregation Interval', 'Time Aggregation Unit']]
+        result_table.set_index('Column Label', inplace=True)
 
-        self.gauge.SetValue(0)
+        datavalues = self.tables.get('DataValues')  # type: DataFrame
+        datavalues.set_index(['LocalDateTime', 'UTCOffset'], inplace=True)
 
-        # for i in xrange(0, self.datavalue_count):
-        for i, series in self.tables.get('DataValues').iterrows():
-            # values = datavalues[i]
+        result_count = float(result_table.shape[0])
+        results_counter = 1.
 
+        top_frame = wx.GetApp().GetTopWindow()
+
+        procs = []
+        workers = []
+
+        # Iterate over the _columns_ of datavalues, where `series` is
+        # a Series object containing datavalues corresponding to a
+        # single variable.
+        for varname, series in datavalues.iteritems():  # type: str, Series
+
+            # update progress bar and label
+            r_complete = (results_counter / result_count) * 100
+            self.update_gauge(message='Parsing %d/%d: %s' % (results_counter, result_count, varname),
+                              setvalue=r_complete)
+            results_counter += 1.
+
+            # drop any values that are NaT
             series.dropna(inplace=True)
 
-            complete = float(i + 1) / float(self.datavalue_count)
-            self.update_progress_label('%s/%s' % (i + 1, self.datavalue_count))
-            self.gauge.SetValue(complete * 100)
+            result = result_table.loc[varname]  # type: Series
+            tsr = self.timeseriesresults.get(result.get('ResultUUID'))
+            censor_code = result.get('Censor Code')
+            quality_code = result.get('Quality Code')
+            timeagg_interval = result.get('Time Aggregation Interval')
+            aggregation_unit = self.units.get(result.get('Time Aggregation Unit').lower())
 
-            # series = Series(values, index=colnames)
-            # series = Series(row, index=colnames)
-            # series.dropna(inplace=True)
-
-            localdt = series.get('LocalDateTime')
-            utcoffset = series.get('UTCOffset')
+            create_tsrv = functools.partial(self.create_tsrv,
+                                            tsr=tsr,
+                                            censor_code=censor_code,
+                                            quality_code=quality_code,
+                                            timeagg_interval=timeagg_interval,
+                                            aggregation_unit=aggregation_unit)
 
             tsrvs = []
-            for _, result in result_table.iterrows():
-                label = result.get('Column Label')
-                uuid = result.get('ResultUUID')
+            datavalue_counter = 1.
+            datavalue_count = float(len(series.index))
+            for sindex, datavalue in series.iteritems():
 
-                tsr = self.timeseriesresults.get(uuid)
-                value = series.get(label)
+                # update second progress bar and label
+                dv_complete = (datavalue_counter / datavalue_count) * 100
+                self.update_gauge(message='Parsing %d of %d rows' % (int(datavalue_counter), int(datavalue_count)),
+                                  setvalue=dv_complete,
+                                  gauge_pos=2,
+                                  label_pos=2)
+                datavalue_counter += 1.
 
-                assert(tsr is not None)
+                localdt, utcoffset = sindex
+                args = (localdt, int(utcoffset), float(datavalue),)
+                tsrvs.append(create_tsrv(args))
 
-                censor_code = result.get('Censor Code')
-                quality_code = result.get('Quality Code')
-                timeagg_interval = result.get('Time Aggregation Interval')
-                aggregation_unit = self.units.get(result.get('Time Aggregation Unit').lower())
+            """Single threaded - fastest with small files, VERY slow with large files"""
+            # top_frame.Title = 'YODA Tools - singlethreaded'
+            # self.__commit_tsrvs(self.session, tsrvs)
 
-                tsrvs.append(TimeSeriesResultValues(
-                    ResultObj=tsr,
-                    DataValue=value,
-                    ValueDateTime=localdt,
-                    ValueDateTimeUTCOffset=utcoffset,
-                    CensorCodeCV=censor_code,
-                    QualityCodeCV=quality_code,
-                    TimeAggregationInterval=timeagg_interval,
-                    TimeAggregationIntervalUnitsObj=aggregation_unit
-                ))
+            """Mulithreaded - fairly fast regardless of file size"""
+            top_frame.Title = 'YODA Tools - multithreaded'
+            # create some worker threads
+            tsrvs_split = np.array_split(tsrvs, 8)
+            for tsrvs_ in tsrvs_split:
+                worker = SessionWorker(self.__session_factory.Session, target=self.__commit_tsrvs, args=tsrvs_.tolist())
+                worker.daemon = True
+                worker.start()
+                workers.append(worker)
 
-            self.__commit_tsrvs(tsrvs)
+            """Multiprocessing - fastest with large files, VERY slow with small files... more prone to crashing..."""
+            # top_frame.Title = 'YODA Tools - multiprocessing 1'
+            #
+            # for tsrvs_ in np.array_split(tsrvs, 4):
+            #     proc = Process(target=commit_tsrvs, args=(self.conn, tsrvs_.tolist()))
+            #     proc.start()
+            #     procs.append(proc)
 
-        self._flush()
+        # wait for processes/threads to finish executing
+        for p in procs:
+            p.join()
 
-    def __commit_tsrvs(self, tsrvs):
-        self.session.add_all(tsrvs)
+        for w in workers:
+            w.join()
+
+
+    def create_tsrv(self, data, tsr, censor_code, quality_code, timeagg_interval, aggregation_unit):
+        localdt, utcoffset, datavalue = data
+
+        return TimeSeriesResultValues(
+            ResultID=tsr.ResultID,
+            DataValue=datavalue,
+            ValueDateTime=localdt,
+            ValueDateTimeUTCOffset=utcoffset,
+            CensorCodeCV=censor_code,
+            QualityCodeCV=quality_code,
+            TimeAggregationInterval=timeagg_interval,
+            TimeAggregationIntervalUnitsID=aggregation_unit.UnitsID
+        )
+
+    def __commit_tsrvs(self, session, tsrvs):  # type: (Session, [TimeSeriesResultValues]) -> None
+        session.add_all(tsrvs)
         try:
-            self.session.commit()
+            session.commit()
         except (IntegrityError, ProgrammingError):
-            self.session.rollback()
-
-            for tsrv in tsrvs:
-                self.session.add(tsrv)
+            session.rollback()
+            for i in xrange(0, len(tsrvs)):
+                tsrv = tsrvs[i]
+                session.add(tsrv)
                 try:
-                    self.session.commit()
+                    session.commit()
                 except (IntegrityError, ProgrammingError) as e:
-                    self.update_output_text('Error (row %s): %s' % (i, e.message))
-                    self.session.rollback()
+                    session.rollback()
+                    with print_lock:
+                        self.update_output_text('Error: %s' % e.message)
+
+
+class SessionWorker(Thread):
+
+    def __init__(self, session, *args, **kwargs):
+        Thread.__init__(self, *args, **kwargs)
+        self.Session = session
+
+    def run(self):
+        try:
+            target = getattr(self, '_Thread__target', None)
+            tsrvs = getattr(self, '_Thread__args', None)
+            if all([target, tsrvs]):
+                    target(self.Session(), tsrvs)
+        except Exception as e:
+            with print_lock:
+                print(e)
+        finally:
+            self.Session.remove()

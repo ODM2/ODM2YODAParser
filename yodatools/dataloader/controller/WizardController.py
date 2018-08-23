@@ -54,6 +54,7 @@ class WizardController(WizardView):
         pub.subscribe(self.handleError, 'controller.error')
         pub.subscribe(self.update_progress_bar_label, 'controller.update_progress_label')
         pub.subscribe(self.update_output_text, 'controller.update_output_text')
+        pub.subscribe(self.update_gauge, 'controller.update_gauge')
 
     def display_warning(self):
         """
@@ -235,9 +236,22 @@ class WizardController(WizardView):
     def handleError(self, message):
         wx.MessageBox("An exception has occurred:\n\n%s" % message, style=wx.ICON_ERROR)
 
-    def update_progress_bar_label(self, message):
-        label = self.summary_page.gauge_label  # type: wx.StaticText
+    def update_progress_bar_label(self, message, label_pos=1):
+        if label_pos == 2:
+            label = self.summary_page.gauge2_label  # type: wx.StaticText
+        else:
+            label = self.summary_page.gauge_label
+
         label.SetLabelText(message)
+
+    def update_gauge(self, value, gauge_pos=1):
+        if gauge_pos == 2:
+            gauge = self.summary_page.gauge2
+        else:
+            gauge = self.summary_page.gauge
+
+        gauge.SetValue(value)
+
 
     def update_output_text(self, message):
         txt = self.summary_page.output  # type: wx.TextCtrl

@@ -206,7 +206,7 @@ class ExcelSpecimen(ExcelParser):
                 'ResultObj': result
             })
 
-            self._updateGauge()
+            self.update_gauge()
 
         self.session.commit()
 
@@ -247,7 +247,7 @@ class ExcelSpecimen(ExcelParser):
 
         self.session.commit()
 
-        self._updateGauge(table.shape[0])
+        self.update_gauge(table.shape[0])
 
     def parse_specimens(self):
         """
@@ -331,7 +331,7 @@ class ExcelSpecimen(ExcelParser):
                 'SamplingFeatureObj': sampling_feature
             })
 
-            self._updateGauge()
+            self.update_gauge()
 
         self.session.commit()
 
