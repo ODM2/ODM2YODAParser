@@ -17,10 +17,10 @@ class WizardView(wx.Frame):
 
         # Components
         break_line_header = wx.StaticLine(header_panel)
-        self.title_text = wx.StaticText(header_panel, label="Wizard Title")
+        self.title_text = wx.StaticText(header_panel, label='Wizard Title')
 
         # Style components
-        title_font = wx.Font(pointSize=18, family=wx.DEFAULT, style=wx.NORMAL, weight=wx.NORMAL)
+        title_font = wx.Font(pointSize=18, family=wx.DEFAULT, style=wx.NORMAL, weight=wx.NORMAL)  # noqa
         self.title_text.SetFont(title_font)
 
         # Sizer
@@ -52,8 +52,8 @@ class WizardView(wx.Frame):
 
         # Components
         break_line_footer = wx.StaticLine(self.footer_panel)
-        self.next_button = wx.Button(self.footer_panel, label="Next")
-        self.back_button = wx.Button(self.footer_panel, label="Back")
+        self.next_button = wx.Button(self.footer_panel, label='Next')
+        self.back_button = wx.Button(self.footer_panel, label='Back')
 
         # Sizer
         footer_sizer = wx.BoxSizer(wx.VERTICAL)
@@ -87,4 +87,3 @@ class WizardView(wx.Frame):
     def add_page(self, page):
         self.wizard_pages.append(page)
         self.body_sizer.Add(page, 1, wx.EXPAND | wx.ALL, 0)
-

@@ -7,22 +7,22 @@ class WizardDatabasePageView(wx.Panel):
     def __init__(self, parent):
         super(WizardDatabasePageView, self).__init__(parent)
 
-        self.panel = pnlDBConfig(self, service_manager= None, is_main =False)
+        self.panel = pnlDBConfig(self,  is_main=False)
         self.sizer = wx.BoxSizer(wx.VERTICAL)
-        self.sizer.AddWindow(self.panel, 1, border=1, flag=wx.EXPAND | wx.GROW | wx.ALL)
+        self.sizer.Add(self.panel, 1, border=1, flag=wx.EXPAND | wx.GROW | wx.ALL)  # noqa
         self.SetSizer(self.sizer)
         self.sizer.Fit(self.panel)
         # Components
-        # instructions_text = wx.StaticText(self, label="Connect to a database")
+        # instructions_text = wx.StaticText(self, label='Connect to a database')
         # self.database_combo = wx.ComboBox(self, style=wx.CB_READONLY)
         # self.address_text_ctrl = wx.TextCtrl(self)
         # self.username_text_ctrl = wx.TextCtrl(self)
         # self.password_text_ctrl = wx.TextCtrl(self, style=wx.TE_PASSWORD)
         #
         # # Style componets
-        # self.address_text_ctrl.SetHint("Address")
-        # self.username_text_ctrl.SetHint("Username")
-        # self.password_text_ctrl.SetHint("Password")
+        # self.address_text_ctrl.SetHint('Address')
+        # self.username_text_ctrl.SetHint('Username')
+        # self.password_text_ctrl.SetHint('Password')
         #
         # # Sizer
         # sizer = wx.BoxSizer(wx.VERTICAL)

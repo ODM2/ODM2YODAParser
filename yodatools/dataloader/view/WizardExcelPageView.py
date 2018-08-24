@@ -8,12 +8,12 @@ class WizardExcelPageView(wx.Panel):
         # self.SetBackgroundColour(wx.GREEN)
         # self.Hide()
 
-        instructions_text = wx.StaticText(self, label="Choose a location to save Excel export")
+        instructions_text = wx.StaticText(self, label='Choose a location to save Excel export')  # noqa
         self.file_text_ctrl = wx.TextCtrl(self)
-        self.browse_button = wx.Button(self, label="Browse")
+        self.browse_button = wx.Button(self, label='Browse')
 
         # Style components
-        self.file_text_ctrl.SetHint("Filepath...")
+        self.file_text_ctrl.SetHint('Filepath...')
 
         # Sizer
         sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -25,7 +25,7 @@ class WizardExcelPageView(wx.Panel):
         input_sizer.Add(self.browse_button, 0, wx.EXPAND | wx.ALL, 2)
 
         vertical_sizer.Add(instructions_text, 0, wx.EXPAND | wx.ALL, 2)
-        vertical_sizer.Add(input_sizer, 0, wx.EXPAND | wx.ALIGN_CENTER_HORIZONTAL)
+        vertical_sizer.Add(input_sizer, 0, wx.EXPAND | wx.ALIGN_CENTER_HORIZONTAL)  # noqa
         sizer.Add(vertical_sizer, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 16)
 
         self.SetSizer(sizer)

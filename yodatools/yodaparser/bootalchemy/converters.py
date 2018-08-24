@@ -23,12 +23,16 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
 
-import re, datetime
+import datetime
+import re
 
-class ConverterError(Exception):pass
+
+class ConverterError(Exception):
+    pass
+
 
 timestamp_regexp = re.compile(
-        r'''^(?P<year>[0-9][0-9][0-9][0-9])
+        r"""^(?P<year>[0-9][0-9][0-9][0-9])
             -(?P<month>[0-9][0-9]?)
             -(?P<day>[0-9][0-9]?)
             (?:(?:[Tt]|[ \t]+)
@@ -37,12 +41,13 @@ timestamp_regexp = re.compile(
             :(?P<second>[0-9][0-9])
             (?:\.(?P<fraction>[0-9]*))?
             (?:[ \t]*(?P<tz>Z|(?P<tz_sign>[-+])(?P<tz_hour>[0-9][0-9]?)
-            (?::(?P<tz_minute>[0-9][0-9]))?))?)?$''', re.X)
-            
+            (?::(?P<tz_minute>[0-9][0-9]))?))?)?$""", re.X)
+
+
 def timestamp(value):
     match = timestamp_regexp.match(value)
     if match is None:
-        raise ConverterError('Unknown DateTime format, %s try %%Y-%%m-%%d %%h:%%m:%%s.d'%value)
+        raise ConverterError('Unknown DateTime format, %s try %%Y-%%m-%%d %%h:%%m:%%s.d' % value)  # noqa
     values = match.groupdict()
     year = int(values['year'])
     month = int(values['month'])
@@ -70,16 +75,18 @@ def timestamp(value):
         data -= delta
     return data
 
+
 timeonly_regexp = re.compile(
-        r'''^(?P<hour>[0-9][0-9]?)
+        r"""^(?P<hour>[0-9][0-9]?)
             :(?P<minute>[0-9][0-9])
             (?::(?P<second>[0-9][0-9]))?
-            (?:\.(?P<fraction>[0-9]*))?$''', re.X)
+            (?:\.(?P<fraction>[0-9]*))?$""", re.X)
+
 
 def timeonly(value):
     match = timeonly_regexp.match(value)
     if match is None:
-        raise ConverterError('Unknown Time format, %s try HH:MM:SS.dddddd'%value)
+        raise ConverterError('Unknown Time format, %s try HH:MM:SS.dddddd' % value)  # noqa
     values = match.groupdict()
     hour = int(values['hour'])
     minute = int(values['minute'])

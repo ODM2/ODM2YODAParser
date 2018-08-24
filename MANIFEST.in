@@ -1,0 +1,14 @@
+include *.txt
+include README.md
+
+recursive-include yodatools *.py
+recursive-include yodatools *.yml
+recursive-include yodatools *.csv
+recursive-include yodatools *.xlsm
+recursive-include yodatools *.cdl
+recursive-include yodatools *.gdoc
+recursive-include yodatools *.yaml
+recursive-include yodatools *.json
+recursive-include yodatools *.txt
+
+include versioneer.py

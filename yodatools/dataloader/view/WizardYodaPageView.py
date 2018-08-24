@@ -6,12 +6,12 @@ class WizardYodaPageView(wx.Panel):
         super(WizardYodaPageView, self).__init__(parent)
 
         # Components
-        instructions_text = wx.StaticText(self, label="Choose a location to save YODA export")
+        instructions_text = wx.StaticText(self, label='Choose a location to save YODA export')  # noqa
         self.file_text_ctrl = wx.TextCtrl(self)
-        self.browse_button = wx.Button(self, label="Browse")
+        self.browse_button = wx.Button(self, label='Browse')
 
         # Style components
-        self.file_text_ctrl.SetHint("Choose a directory...")
+        self.file_text_ctrl.SetHint('Choose a directory...')
 
         # Sizer
         sizer = wx.BoxSizer(wx.HORIZONTAL)
@@ -23,7 +23,7 @@ class WizardYodaPageView(wx.Panel):
         input_sizer.Add(self.browse_button, 0, wx.EXPAND | wx.ALL, 2)
 
         vertical_sizer.Add(instructions_text, 0, wx.EXPAND | wx.ALL, 2)
-        vertical_sizer.Add(input_sizer, 0, wx.EXPAND | wx.ALIGN_CENTER_HORIZONTAL)
+        vertical_sizer.Add(input_sizer, 0, wx.EXPAND | wx.ALIGN_CENTER_HORIZONTAL)  # noqa
         sizer.Add(vertical_sizer, 1, wx.ALIGN_CENTER_VERTICAL | wx.ALL, 16)
 
         self.SetSizer(sizer)

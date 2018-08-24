@@ -420,11 +420,11 @@ class Loader(object):
 
         del serial['level_0']
 
-        # TODO does this fail for sqlite in memory
+        # TODO does this fail for sqlite in memory  ## Is this a statement or a question??
         # session.commit()
         # session.close()
 
-        from odm2api.ODM2.models import TimeSeriesResultValues
+        from odm2api.models import TimeSeriesResultValues
         tablename = TimeSeriesResultValues.__tablename__
         serial.to_sql(name=tablename,
                          schema=TimeSeriesResultValues.__table_args__['schema'],

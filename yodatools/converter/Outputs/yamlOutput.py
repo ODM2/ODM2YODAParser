@@ -1,7 +1,5 @@
-
 from yodatools.converter.Abstract import iOutputs
 from yodatools.yodaparser.yamlPrinter import YamlPrinter
-
 
 
 class yamlOutput(iOutputs):
@@ -13,7 +11,7 @@ class yamlOutput(iOutputs):
     #         try:
     #             for o in session.query(t).all():
     #                 data.append(o)
-    #                 Representer.add_representer(o, Representer.represent_name)
+    #                 Representer.add_representer(o, Representer.represent_name)  # noqa
     #         except Exception as e:
     #             print e
     #
@@ -32,7 +30,6 @@ class yamlOutput(iOutputs):
 
         yp = YamlPrinter()
         yp.print_yoda(file_path, data)
-
 
     def accept(self):
         raise NotImplementedError()
