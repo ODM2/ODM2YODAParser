@@ -1,16 +1,14 @@
+import os
+import time
+
+import wx
+from pubsub import pub
+
 from yodatools.converter.Inputs.excelInput import ExcelInput
 from yodatools.converter.Inputs.yamlInput import yamlInput
 from yodatools.converter.Outputs.yamlOutput import yamlOutput
 from yodatools.converter.Outputs.dbOutput import dbOutput
 from yodatools.dataloader.view.WizardSummaryPageView import WizardSummaryPageView
-
-import wx
-import os
-
-try:
-    from wx.lib.pubsub import pub
-except ImportError:
-    pass
 
 
 class WizardSummaryPageController(WizardSummaryPageView):
@@ -22,22 +20,17 @@ class WizardSummaryPageController(WizardSummaryPageView):
 
     def run(self, *args):
 
-        debug = os.getenv('DEBUG', 'false')
-
         try:
             self.__run(*args)
 
         except Exception as e:
-            pub.sendMessage('wizardcontroller.error', message=e.message)
-            # wx.MessageBox(e.message, style=wx.ICON_ERROR)
 
-            if debug == 'true':
+            pub.sendMessage('controller.error', message=e.message)
+
+            if os.getenv('DEBUG', 'false') == 'true':
                 raise
 
     def __run(self, input_file, yoda_output_file_path=None, odm2_connection=None, sqlite_connection=None):
-
-        # Start gauge with 2% to show starting progress
-        self.gauge.SetValue(2)
 
         # Check if it is a yaml, or excel file
         file_type = verify_file_type(input_file)
@@ -58,23 +51,24 @@ class WizardSummaryPageController(WizardSummaryPageView):
             yoda.parse(input_file)
             session = yoda.sendODM2Session()
 
-        self.gauge.SetValue(50)
-        print "Input complete"
+        print("Input complete")
+
         # Go through each checkbox
         if yoda_output_file_path is not None:
+            self.gauge.SetValue(50)
             yaml = yamlOutput()
             yaml.save(session=session, file_path=yoda_output_file_path)
             print "Yoda Output Complete"
 
-        if odm2_connection is not None:
-            db = dbOutput()
-            db.save(session=session, connection_string=odm2_connection)
-            print "DB Output Complete"
-
-        if sqlite_connection is not None:
-            db = dbOutput()
-            db.save(session=session, connection_string=sqlite_connection)
-            print "SQLite Output Complete"
+        # if odm2_connection is not None:
+        #     db = dbOutput()
+        #     db.save(session=session, connection_string=odm2_connection)
+        #     print "DB Output Complete"
+        #
+        # if sqlite_connection is not None:
+        #     db = dbOutput()
+        #     db.save(session=session, connection_string=sqlite_connection)
+        #     print "SQLite Output Complete"
 
         session.close_all()
 

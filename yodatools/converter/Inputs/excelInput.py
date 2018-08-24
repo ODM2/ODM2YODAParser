@@ -19,7 +19,6 @@ class ExcelInput(iInputs):
     def session(self):
         return self._session
 
-#     def parse(self, file_path=None):
     def parse(self, file_path):
         """
         If any of the methods return early, then check that they have the table ranges
@@ -38,11 +37,11 @@ class ExcelInput(iInputs):
 
         if type_ == "TimeSeries":
             # raise Exception("TimeSeries Parsing is not currently supported")
-            et = ExcelTimeseries(self.file_path, gauge=self.gauge)
-            et.parse(self._session_factory)
+            et = ExcelTimeseries(self.file_path, self._session_factory, conn=self.conn)
+            et.parse()
         else:
-            es = ExcelSpecimen(self.file_path, gauge=self.gauge)
-            es.parse(self._session_factory)
+            es = ExcelSpecimen(self.file_path, self._session_factory)
+            es.parse()
 
 
         # self._session.commit()

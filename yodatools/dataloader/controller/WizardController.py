@@ -9,11 +9,7 @@ from WizardYodaPageController import WizardYodaPageController
 from WizardSQLitePageController import WizardSQLitePageController
 
 import wx
-
-try:
-    from wx.lib.pubsub import pub
-except ImportError:
-    pass
+from pubsub import pub
 
 from yodatools.dataloader.view.WizardView import WizardView
 from odm2api.ODMconnection import dbconnection as dbc
@@ -55,7 +51,10 @@ class WizardController(WizardView):
         self.show_home_page()
         self.SetSize((450, 450))
 
-        pub.subscribe(self.handleError, 'wizardcontroller.error')
+        pub.subscribe(self.handleError, 'controller.error')
+        pub.subscribe(self.update_progress_bar_label, 'controller.update_progress_label')
+        pub.subscribe(self.update_output_text, 'controller.update_output_text')
+        pub.subscribe(self.update_gauge, 'controller.update_gauge')
 
     def display_warning(self):
         """
@@ -230,9 +229,30 @@ class WizardController(WizardView):
         )
 
         # When true, the thread will terminate when app is closed
-        # When false, the thread will continue even after the ap is closed
+        # When false, the thread will continue even after the app is closed
         self.thread.setDaemon(True)
         self.thread.start()
 
     def handleError(self, message):
         wx.MessageBox("An exception has occurred:\n\n%s" % message, style=wx.ICON_ERROR)
+
+    def update_progress_bar_label(self, message, label_pos=1):
+        if label_pos == 2:
+            label = self.summary_page.gauge2_label  # type: wx.StaticText
+        else:
+            label = self.summary_page.gauge_label
+
+        label.SetLabelText(message)
+
+    def update_gauge(self, value, gauge_pos=1):
+        if gauge_pos == 2:
+            gauge = self.summary_page.gauge2
+        else:
+            gauge = self.summary_page.gauge
+
+        gauge.SetValue(value)
+
+
+    def update_output_text(self, message):
+        txt = self.summary_page.output  # type: wx.TextCtrl
+        txt.AppendText(message)

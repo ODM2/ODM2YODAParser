@@ -1,651 +1,352 @@
 import os
-import openpyxl
-from odm2api.models import *
-from yodatools.converter.Abstract import iInputs
-import pandas
+from datetime import timedelta
+from collections import defaultdict
+from uuid import uuid4
 import time
 import string
 import re
-from sqlalchemy.exc import IntegrityError
 
-from .ExcelParser import ExcelParser
+import pandas as pd
+from pandas import DataFrame
+import numpy as np
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm.exc import NoResultFound
+import openpyxl
+from openpyxl.worksheet.table import Table
+from openpyxl.workbook.workbook import Workbook
+from openpyxl.cell.cell import Cell
+from pubsub import pub
+
+from odm2api.models import *
+from yodatools.converter.Abstract import iInputs
+
+from .excelParser import ExcelParser
 
 
 class ExcelSpecimen(ExcelParser):
-    def __init__(self, input_file, **kwargs):
+    def __init__(self, input_file, session_factory, **kwargs):
 
-        super(ExcelSpecimen, self).__init__()
+        super(ExcelSpecimen, self).__init__(input_file, session_factory, **kwargs)
 
-        self.input_file = input_file
-
-        self.gauge = None
-        self.total_rows_to_read = 0
-        self.rows_read = 0
-
-        self.gauge = kwargs.get('gauge', None)
-
-        self.workbook = None
-        self.sheets = []
-        self.name_ranges = None
-        self.tables = {}
-        self._init_data(input_file)
-
-    @property
-    def session(self):
-        if hasattr(self, '_session'):
-            return self._session
-        return None
-
-    def get_table_name_ranges(self):
-        """
-        Returns a list of the name range that have a table.
-        The name range should contain the cells locations of the data.
-        :rtype: list
-        """
-
-        table_name_range = {}
-        for name_range in self.name_ranges:
-            name = name_range.name  # type: str
-
-            if '_table' in name.lower():
-                name = re.sub(r'_[tT]able', '', name)
-
-            if any(name.lower() in table_name.lower() for table_name in self.TABLE_NAMES):
-                sheet, dimensions = name_range.attr_text.split('!')
-                sheet = sheet.replace('\'', '')
-
-                if sheet in table_name_range:
-                    table_name_range[sheet].append(name_range)
-                else:
-                    table_name_range[sheet] = [name_range]
-
-                self.count_number_of_rows_to_parse(dimensions=dimensions)
-
-        return table_name_range
+        self.sites = defaultdict(lambda: None)
 
     def _init_data(self, file_path):
-        self.workbook = openpyxl.load_workbook(file_path, read_only=True)
-        self.name_ranges = self.workbook.get_named_ranges()
-        self.sheets = self.workbook.get_sheet_names()
+        super(ExcelSpecimen, self)._init_data(file_path)
+        self.workbook.close()
 
-    def count_number_of_rows_to_parse(self, dimensions):
-        # http://stackoverflow.com/questions/1450897/python-removing-characters-except-digits-from-string
-        top, bottom = dimensions.replace('$', '').split(':')
-        all = string.maketrans('', '')
-        nodigs = all.translate(all, string.digits)
-        top = int(top.translate(all, nodigs))
-        bottom = int(bottom.translate(all, nodigs))
-        self.total_rows_to_read += (bottom - top)
-
-
-    def get_range_address(self, named_range):
-        if named_range is not None:
-            return named_range.attr_text.split('!')[1].replace('$', '')
-        return None
-
-    def get_range_value(self, range_name, sheet):
-        value = None
-        named_range = self.workbook.get_named_range(range_name)
-        range_ = self.get_range_address(named_range)
-        if range_:
-            value = sheet[range_].value
-        return value
-
-
-    def parse(self, session_factory):
+    def parse(self):
         """
-        If any of the methods return early, then check that they have the table ranges
-        The table range should exist in the tables from get_table_name_range()
-        :param :
-        :return:
+        Parses the excel file read in self._init_data
+        :return: None
         """
-
-        self._session = session_factory.getSession()
-        self._engine = session_factory.engine
-
-        self.tables = self.get_table_name_ranges()
 
         start = time.time()
 
-
-        self.parse_affiliations()
+        self.parse_people_and_orgs()
         self.parse_datasets()
         self.parse_methods()
         self.parse_variables()
         self.parse_units()
         self.parse_processing_level()
-        self.parse_sampling_feature()
+        self.parse_spatial_reference()
         self.parse_sites()
         self.parse_specimens()
         self.parse_analysis_results()
 
-        self._session.commit()
 
         end = time.time()
-        print(end - start)
+
+        hours, remainder = divmod(end - start, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        self.update_progress_label('Input completed in %s:%s:%s' % (int(hours), int(minutes), int(seconds)))
 
         return True
 
-    def __updateGauge(self):
-        # Objects are passed by reference in Python :)
-        if not self.gauge:  # type: wx.Gauge
-            return  # No gauge was passed in, but that's ok :)
-
-        self.rows_read += 1
-        try:
-            value = (float(self.rows_read) / self.total_rows_to_read * 100.0) / 2.
-
-            if value >= self.gauge.GetValue():
-                self.gauge.SetValue(value)
-
-        except ZeroDivisionError:
-            pass
-
-    def parse_datasets(self):
-
-        CONST_DATASET = 'Dataset Citation'
-
-        sheet, tables = self.get_sheet_and_table(CONST_DATASET)
-
-        dataset = DataSets()
-        dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
-        dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
-        dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
-        dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
-        dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
-        self._session.add(dataset)
-
-        self._flush()
-
-        self.data_set = dataset
-
     def parse_analysis_results(self):
-        SHEET_NAME = "Analysis_Results"
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
+        """
+        Parses rows from the 'DataColumns' table in the 'Analysis_Results' worksheet.
+        :return: None
+        """
 
-        if not len(tables):
-            print "No analysis result found"
-            return
+        sampling_features = defaultdict(lambda: None)
+        collection_actions = defaultdict(lambda: None)
 
-        for table in tables:
-            rows = sheet[self.get_range_address(table)]
-            for row in rows:
+        table = self.tables.get('Analysis_Results', DataFrame())
 
-                action = Actions()
-                feat_act = FeatureActions()
-                act_by = ActionBy()
-                measure_result = MeasurementResults()
-                measure_result_value = MeasurementResultValues()
-                related_action = RelatedActions()
-                dataset_result = DataSetsResults()
+        # Force values in 'Specimen Code' column to be strings
+        table['Specimen Code'] = table['Specimen Code'].astype(str)
 
-                # Action
-                method = self._session.query(Methods).filter_by(MethodCode=row[7].value).first()
-                action.MethodObj = method
-                action.ActionTypeCV = "Specimen analysis"
-                action.BeginDateTime = row[5].value
-                action.BeginDateTimeUTCOffset = row[6].value
+        row_count, _ = table.shape
 
-                # Feature Actions
-                # TODO: row[0] appears to be a ResultUUID, not a SamplingFeatureUUID... fix it...?
-                sampling_feature = self._session.query(SamplingFeatures)\
-                    .filter_by(SamplingFeatureCode=str(row[1].value))\
-                    .first()
-                    # .filter(SamplingFeatureCode=row[1].value)\
+        for index, row in table.iterrows():
 
-                feat_act.SamplingFeatureObj = sampling_feature
-                feat_act.ActionObj = action
+            self.update_progress_label('Reading Analysis_Results table %d/%d' % (index + 1, row_count))
 
-                # Action By
+            # Get the Methods object that is needed to create the Actions object.
+            # If the method does not exist in the database, skip inserting this row
+            # as the method is required.
+            method_code = row.get('Analysis Method Code')
+            if method_code.lower() not in self.methods:
+                self.update_output_text('Skipped \'Anaylsis_Results\':\'Anaylsis_Results\' row {} - Method "{}" not found'.format(
+                    index,
+                    method_code
+                ))
+
+                continue
+
+            method = self.methods.get(method_code.lower())
+
+            # Get the sampling feature, which should already be parsed and
+            # exist in the database. If not, then skip this row.
+            sampling_feature_code = row.get('Specimen Code', '')
+            if sampling_feature_code not in sampling_features:
                 try:
-                    last_name = row[8].value.split(' ')[-1]
-                except IndexError as e:
-                    print(e)
-                    last_name = row[8].value
+                    sampling_features[sampling_feature_code] = self.session.query(SamplingFeatures)\
+                        .filter_by(SamplingFeatureCode=sampling_feature_code)\
+                        .one()
+                except NoResultFound:
+                    self.update_output_text("Skipped 'Analysis_Results':'Analysis_Results' row {} - Sampling Feature Code '{}' did not map to any Specimens.".format(
+                        index + 1,
+                        sampling_feature_code
+                    ))
 
-                person = self._session.query(People).filter_by(PersonLastName=last_name).first()
-                affiliations = self._session.query(Affiliations).filter_by(PersonID=person.PersonID).first()
-                act_by.AffiliationObj = affiliations
-                act_by.ActionObj = action
-                act_by.IsActionLead = True
+                    continue
 
-                related_action.ActionObj = action
-                related_action.RelationshipTypeCV = "Is child of"
-                collectionAction = self._session.query(FeatureActions)\
-                    .filter(FeatureActions.FeatureActionID == SamplingFeatures.SamplingFeatureID)\
-                    .filter(SamplingFeatures.SamplingFeatureCode == str(row[1].value))\
+            # Create the Actions object
+            action = self.create(Actions, commit=False, **{
+                'MethodObj': method,
+                'ActionTypeCV': 'Specimen analysis',
+                'BeginDateTime': row.get('Analysis DateTime'),
+                'BeginDateTimeUTCOffset': row.get('UTC Offset')
+            })
+
+            # Creat the FeatureActions object
+            feature_action = self.create(FeatureActions, commit=False, **{
+                'SamplingFeatureObj': sampling_features.get(sampling_feature_code),
+                'ActionObj': action
+            })
+
+            # Get the Affiliations object for ActionBy
+            analyst_name = row.get('Analyst Name', '')
+            # if analyst_name not in affiliations:
+            #     names = self.parse_name(analyst_name)
+            #     affiliations[analyst_name] = self.session.query(Affiliations) \
+            #         .join(People) \
+            #         .filter(People.PersonLastName == names.get('last', '')) \
+            #         .filter(People.PersonFirstName == names.get('first', '')) \
+            #         .filter(People.PersonMiddleName == names.get('middle', '')) \
+            #         .first()
+
+            # Create the ActionBy object
+            _ = self.create(ActionBy, commit=False, **{
+                'IsActionLead': True,
+                'AffiliationObj': self.affiliations.get(analyst_name),
+                'ActionObj': action,
+            })
+
+            # Get the collection Actions object and create RelatedActions object
+            specimen_code = row.get('Specimen Code')
+            if specimen_code not in collection_actions:
+                collection_actions[specimen_code] = self.session.query(FeatureActions) \
+                    .filter(FeatureActions.FeatureActionID == SamplingFeatures.SamplingFeatureID) \
+                    .filter(SamplingFeatures.SamplingFeatureCode == row.get('Specimen Code')) \
                     .first()
 
-                related_action.RelatedActionObj = collectionAction.ActionObj
+            if collection_actions[specimen_code] is None:
+                self.update_output_text("Skipped 'AnalysisResults':'AnalysisResults' row %d - FeatureAction with Sampling Feature Code '%s' not found" % (index + 1, specimen_code))
+                continue
 
-                self._session.add(action)
-                self._session.add(feat_act)
-                self._session.add(act_by)
-                self._session.add(related_action)
+            _ = self.create(RelatedActions, commit=False, **{
+                'ActionObj': action,
+                'RelationshipTypeCV': 'Is child of',
+                'RelatedActionObj': collection_actions[specimen_code].ActionObj,
+            })
 
-                # Measurement Result (Different from Measurement Result Value) also creates a Result
-                variable = self._session.query(Variables).filter_by(VariableCode=row[2].value).first()
-                units_for_result = self._session.query(Units).filter_by(UnitsName=row[4].value).first()
-                proc_level = self._session.query(ProcessingLevels).filter_by(ProcessingLevelCode=row[11].value).first()
+            # Get the Variables, Units, and ProcessingLevels objects, which are
+            # needed to create a MeasurementResults
+            variable = self.variables.get(row.get('Variable Code').lower())
+            unit = self.units.get(row.get('Units').lower())
+            processing_lvl = self.get(ProcessingLevels, ProcessingLevelCode=row.get('Processing Level', ''))
+            time_aggregation_unit = self.get(Units, UnitsName=row.get('Time Aggregation Unit', ''))
 
-                units_for_agg = self._session.query(Units).filter_by(UnitsName=row[14].value).first()
-                measure_result.CensorCodeCV = row[9].value
-                measure_result.QualityCodeCV = row[10].value
-                measure_result.TimeAggregationInterval = row[13].value
-                measure_result.TimeAggregationIntervalUnitsObj = units_for_agg
-                measure_result.AggregationStatisticCV = row[15].value
-                measure_result.ResultUUID = row[0].value
-                measure_result.FeatureActionObj = feat_act
-                measure_result.ResultTypeCV = "Measurement"
-                measure_result.VariableObj = variable
-                measure_result.UnitsObj = units_for_result
-                measure_result.ProcessingLevelObj = proc_level
-                measure_result.StatusCV = "Complete"
-                measure_result.SampledMediumCV = row[12].value
-                measure_result.ValueCount = 1
-                measure_result.ResultDateTime = collectionAction.ActionObj.BeginDateTime
-                self._session.add(measure_result)
-                self._session.flush()
+            if not all([variable, unit, processing_lvl, time_aggregation_unit]):
+                self.update_output_text('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
 
+            # Create the MeasurementResults object
+            result = self.create(MeasurementResults, commit=False, **{
+                'ResultUUID': row.get('ResultUUID', str(uuid4())),
+                'CensorCodeCV': row.get('Censor Code CV'),
+                'QualityCodeCV': row.get('Quality Code CV'),
+                'TimeAggregationInterval': row.get('Time Aggregation Interval'),
+                'TimeAggregationIntervalUnitsObj': time_aggregation_unit,
+                'AggregationStatisticCV': row.get('Aggregation Statistic CV'),
+                'FeatureActionObj': feature_action,
+                'ResultTypeCV': 'Measurement',
+                'VariableObj': variable,
+                'UnitsObj': unit,
+                'ProcessingLevelObj': processing_lvl,
+                'StatusCV': 'Complete',
+                'SampledMediumCV': row.get('Sampled Medium CV'),
+                'ValueCount': 1,
+                'ResultDateTime': collection_actions[specimen_code].ActionObj.BeginDateTime,
+            })
 
-                #DataSet Results
-                if self.data_set is not None:
-                    dataset_result.DataSetObj = self.data_set
-                    dataset_result.ResultObj = measure_result
-                    self._session.add(dataset_result)
+            # Create MeasurementResultValues object
+            _ = self.create(MeasurementResultValues, commit=False, **{
+                'DataValue': row.get('Data Value'),
+                'ValueDateTime': collection_actions[specimen_code].ActionObj.BeginDateTime,
+                'ValueDateTimeUTCOffset': collection_actions[specimen_code].ActionObj.BeginDateTimeUTCOffset,
+                'ResultObj': result
+            })
 
-                # Measurements Result Value
-                measure_result_value.DataValue = row[3].value
-                measure_result_value.ValueDateTime = collectionAction.ActionObj.BeginDateTime
-                measure_result_value.ValueDateTimeUTCOffset = collectionAction.ActionObj.BeginDateTimeUTCOffset
-                measure_result_value.ResultObj = measure_result
+            # Create DataSetsResults object
+            _ = self.create(DataSetsResults, commit=False, **{
+                'DataSetObj': self.data_set,
+                'ResultObj': result
+            })
 
+            self.update_gauge()
 
-
-
-
-                self._session.add(measure_result_value)
-
-                self._flush()
-
-                self.__updateGauge()
+        self.session.commit()
 
     def parse_sites(self):
-        return self.parse_sampling_feature()
 
-    def parse_units(self):
-        CONST_UNITS = 'Units'
+        elevation_datum = self.get_named_range_cell_value('ElevationDatum')
 
-        sheet, tables = self.get_sheet_and_table(CONST_UNITS)
+        latlon_datum = self.get_named_range_cell_value('LatLonDatum')
+        spatial_ref = self.spatial_references.get(latlon_datum.lower(), None)
 
-        if not len(tables):
-            print "No Units found"
-            return
+        table = self.tables.get('Sites', DataFrame())
 
-        units = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
+        self.update_progress_label('Reading Sites table')
 
-            for row in cells:
-                unit = Units()
-                unit.UnitsTypeCV = row[0].value
-                unit.UnitsAbbreviation = row[1].value
-                unit.UnitsName = row[2].value
-                unit.UnitsLink = row[3].value
+        for _, row in table.iterrows():
 
-                if unit.UnitsTypeCV is not None:
-                    units.append(unit)
+            params = {
+                'SamplingFeatureUUID': row.get('Sampling Feature UUID', str(uuid4())),
+                'SamplingFeatureCode': row.get('Sampling Feature Code'),
+                'SamplingFeatureTypeCV': 'Site',
+                'SiteTypeCV': row.get('Site Type'),
+                'Latitude': row.get('Latitude'),
+                'Longitude': row.get('Longitude'),
+                'SpatialReferenceObj': spatial_ref
+            }
 
-                self.__updateGauge()
+            assert (all(params.values()))
 
-        self._session.add_all(units)
-        self._session.flush()
+            params.update({
+                'SamplingFeatureName': row.get('Sampling Feature Name'),
+                'SamplingFeatureDescription': row.get('Sampling Feature Description'),
+                'FeatureGeometryWKT': row.get('Feature Geometry WKT'),
+                'Elevation_m': row.get('Elevation_m'),
+                'ElevationDatumCV': elevation_datum,
+            })
 
-    def parse_affiliations(self):  # rename to Affiliations
-        SHEET_NAME = 'People and Organizations'
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
+            self.sites[params.get('SamplingFeatureCode').lower()] = self.get_or_create(Sites, params, filter_by=['SamplingFeatureCode'], commit=False)
 
-        if not len(tables):
-            print "No affiliations found"
-            return []
+        self.session.commit()
 
-        def parse_organizations(org_table, session):
-            organizations = {}
-
-            cells = sheet[self.get_range_address(org_table)]
-            for row in cells:
-                org = Organizations()
-                org.OrganizationTypeCV = row[0].value
-                org.OrganizationCode = row[1].value
-                org.OrganizationName = row[2].value
-                org.OrganizationDescription = row[3].value
-                org.OrganizationLink = row[4].value
-
-                session.add(org)
-                try:
-                    session.commit()
-                except IntegrityError as e:
-                    print(e)
-                    session.rollback()
-
-
-                organizations[org.OrganizationName] = org
-                self.__updateGauge()
-
-            return organizations
-
-        def parse_authors(author_table):
-            authors = []
-            cells = sheet[self.get_range_address(author_table)]
-            #TODO check if required people have value
-            for row in cells:
-                ppl = People()
-                org = Organizations()
-                aff = Affiliations()
-
-                ppl.PersonFirstName = row[0].value.strip() if row[0].value else ""
-                ppl.PersonMiddleName = row[1].value.strip() if row[1].value else ""
-                ppl.PersonLastName = row[2].value.strip() if row[2].value else ""
-
-                org.OrganizationName = row[3].value
-                aff.AffiliationStartDate = row[5].value
-                aff.AffiliationEndDate = row[6].value
-                aff.PrimaryPhone = row[7].value
-                aff.PrimaryEmail = row[8].value
-                aff.PrimaryAddress = row[9].value
-                aff.PersonLink = row[10].value
-
-                aff.OrganizationObj = org
-                aff.PersonObj = ppl
-
-                authors.append(aff)
-            return authors
-
-        # Combine table and authors
-
-        orgs = {}
-        affiliations = []
-        for table in tables:
-            if 'People_Table' == table.name:
-                affiliations = parse_authors(table)
-            else:
-                orgs = parse_organizations(table, self.session)
-
-        self._flush()
-
-        for aff in affiliations:
-            if aff.OrganizationObj.OrganizationName in orgs:
-                aff.OrganizationObj = orgs[aff.OrganizationObj.OrganizationName]
-
-        self.session.add_all(affiliations)
-        self._flush()
-
-    def get_sheet_and_table(self, sheet_name):
-        sheet = self.workbook.get_sheet_by_name(sheet_name)
-        return sheet, self.tables.get(sheet_name, [])
-
-    def parse_processing_level(self):
-        CONST_PROC_LEVEL = 'Processing Levels'
-        sheet, tables = self.get_sheet_and_table(CONST_PROC_LEVEL)
-
-        if not len(tables):
-            print "No processing levels found"
-            return []
-
-        # processing_levels = []
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-
-            for row in cells:
-                proc_lvl = ProcessingLevels()
-                proc_lvl.ProcessingLevelCode = row[0].value
-                proc_lvl.Definition = row[1].value
-                proc_lvl.Explanation = row[2].value
-
-                self.session.add(proc_lvl)
-                try:
-                    self.session.commit()
-                except IntegrityError:
-                    self.session.rollback()
-
-                # processing_levels.append(proc_lvl)
-
-                self.__updateGauge()
-
-        # return processing_levels
-        # self.session.add_all(processing_levels)
-        # self.session.flush()
-
-    def parse_sampling_feature(self):
-        SHEET_NAME = 'Sampling Features'
-
-        if SHEET_NAME not in self.tables:
-            if 'Sites' in self.tables:
-                SHEET_NAME = 'Sites'
-            else:
-                print "No sampling features/sites found"
-                return []
-
-        sheet = self.workbook.get_sheet_by_name(SHEET_NAME)
-        tables = self.tables[SHEET_NAME]
-
-        sites_table = tables[0] if tables[0].name == 'Sites_Table' else None
-        elevation_datum_range = self.workbook.get_named_range("ElevationDatum")
-        spatial_ref_name_range = self.workbook.get_named_range("LatLonDatum")
-
-        # spatial_ref_table = tables[0] if tables[0].name == 'SitesDatumCV_Table' else tables[1]
-
-        # def parse_sites_datum_cv(sheet, spatial_reference_table):
-        #     result = {}
-        #     cells = sheet[spatial_reference_table.attr_text.split('!')[1].replace('$', '')]
-        #     result['elevation_datum_cv'] = cells[0][1].value
-        #     result['latlon_datum_cv'] = cells[1][1].value
-        #     return result
-
-        # sites_datum = parse_sites_datum_cv(sheet, spatial_ref_table)
-        spatial_references = self.parse_spatial_reference()
-
-        sites = []
-        rows = sheet[self.get_range_address(sites_table)]
-
-
-        elevation_datum = sheet[self.get_range_address(elevation_datum_range)].value
-        # elevation_datum = sites_datum['elevation_datum_cv']
-        spatial_ref_name = sheet[self.get_range_address(spatial_ref_name_range)].value.encode('utf-8')
-        # spatial_ref_name = sites_datum['latlon_datum_cv']
-        spatial_references_obj = spatial_references[spatial_ref_name]
-
-        for row in rows:
-            site = Sites()
-            site.SamplingFeatureUUID = row[0].value
-            site.SamplingFeatureCode = row[1].value
-            site.SamplingFeatureName = row[2].value
-            site.SamplingFeatureDescription = row[3].value
-            site.FeatureGeometryWKT = row[4].value
-            site.Elevation_m = row[5].value
-            site.SamplingFeatureTypeCV = "Site"
-            site.SiteTypeCV = row[6].value
-            site.Latitude = row[7].value
-            site.Longitude = row[8].value
-            site.ElevationDatumCV = elevation_datum
-            site.SpatialReferenceObj = spatial_references_obj
-
-            # sites.append(site)
-
-            self.session.add(site)
-
-            try:
-                self.session.commit()
-            except IntegrityError as e:
-                print(e)
-
-                self.session.rollback()
-
-                # q = self.session.query(Sites).filter(Sites.SamplingFeatureCode == site.SamplingFeatureCode)
-                # if q:
-                #     old_site = q.first()
-                #     _ = self.session.merge(old_site)
-
-            self.__updateGauge()
-
-    def parse_spatial_reference(self):
-        SHEET_NAME = "SpatialReferences"
-        sheet, tables = self.get_sheet_and_table(SHEET_NAME)
-
-        if not len(tables):
-            return []
-
-        spatial_references = {}
-        for table in tables:
-            cells = sheet[self.get_range_address(table)]
-            for row in cells:
-                sr = SpatialReferences()
-                sr.SRSCode = row[0].value
-                sr.SRSName = row[1].value
-                sr.SRSDescription = row[2].value
-                sr.SRSLink = row[3].value
-
-                spatial_references[sr.SRSName] = sr
-
-        return spatial_references
+        self.update_gauge(table.shape[0])
 
     def parse_specimens(self):
-        SPECIMENS = 'Specimens'
-        sheet, tables = self.get_sheet_and_table(SPECIMENS)
+        """
+        Parse rows in the 'Specimens' table on the 'Specimens' worksheet
+        :return: None
+        """
 
-        if not len(tables):
-            print "No specimens found"
-            return []
+        table = self.tables.get('Specimens', DataFrame())
 
-        with self.session.no_autoflush:
-            for table in tables:
-                rows = sheet[self.get_range_address(table)]
+        # Force values in 'Sampling Feature Code' column to be strings
+        table['Sampling Feature Code'] = table['Sampling Feature Code'].astype(str)
 
-                for row in rows:
-                    specimen = Specimens()
-                    action = Actions()
-                    related_feature = RelatedFeatures()
-                    feature_action = FeatureActions()
+        row_count, _ = table.shape
 
-                    # First the Specimen/Sampling Feature
-                    specimen.SamplingFeatureUUID = row[0].value
-                    specimen.SamplingFeatureCode = row[1].value
-                    specimen.SamplingFeatureName = row[2].value
-                    specimen.SamplingFeatureDescription = row[3].value
-                    specimen.SamplingFeatureTypeCV = "Specimen"
-                    specimen.SpecimenMediumCV = row[5].value
-                    specimen.IsFieldSpecimen = row[6].value
-                    specimen.ElevationDatumCV = 'Unknown'
-                    specimen.SpecimenTypeCV = row[4].value
-                    specimen.SpecimenMediumCV = 'Liquid aqueous'
+        for index, row in table.iterrows():
 
-                    # Related Features
-                    related_feature.RelationshipTypeCV = 'Was Collected at'
+            self.update_progress_label('Reading Specimens table %d/%d' % (index + 1, row_count))
 
-                    try:
-                        sampling_feature = self._session.query(SamplingFeatures).filter_by(SamplingFeatureCode=row[7].value).first()
-                    except IntegrityError as e:
-                        print(e)
-                        continue
+            # First get the sampling feature for the RelatedFeatures object that will
+            # be created later. If the sampling feature does not exist in the database,
+            # skip inserting this row, since the sampling feature (which should have
+            # been parsed from the 'Sites' excel sheet) is required.
+            collection_site_code = row.get('Collection Site', '')
+            if collection_site_code.lower() not in self.sites:
+                self.update_output_text('Error: Collection Site "{}" not found. Skipping database insertion of Specimen "{}".'.format(
+                    collection_site_code,
+                    row.get('Sampling Feature Code')
+                ))
 
-                    related_feature.SamplingFeatureObj = specimen
-                    related_feature.RelatedFeatureObj = sampling_feature
+                continue
 
-                    # Last is the Action/SampleCollectionAction
-                    action.ActionTypeCV = 'Specimen collection'
-                    action.BeginDateTime = row[8].value
-                    action.BeginDateTimeUTCOffset = row[9].value
-                    method = self._session.query(Methods).filter_by(MethodCode=row[10].value).first()
-                    action.MethodObj = method
+            collection_site = self.sites.get(collection_site_code.lower(), None)
 
-                    feature_action.ActionObj = action
-                    feature_action.SamplingFeatureObj = specimen
+            # Next, get the Methods object for the Actions object that will also be
+            # created later. Once again, if the method does not exist in the database,
+            # skip inserting this row since the method is required.
+            method_code = row.get('Collection Method Code', '')
+            if method_code.lower() not in self.methods:
+                self.update_output_text('Error: Method "{}" not found. Skipping database insertion of Specimen "{}"'.format(
+                    method_code,
+                    row.get('Sampling Feature Code')
+                ))
 
-                    self._session.add(specimen)
-                    self._session.add(action)
-                    self._session.add(related_feature)
-                    self._session.add(feature_action)
+                continue
 
-                    try:
-                        self.session.commit()
-                    except IntegrityError as e:
-                        print(e)
-                        session.rollback()
+            method = self.methods.get(method_code.lower())
 
-                    self.__updateGauge()
+            # Finally, create the SamplingFeatures specimen object for this row.
+            params = {
+                'SamplingFeatureUUID': row.get('Sampling Feature UUID'),
+                'SamplingFeatureCode': row.get('Sampling Feature Code'),
+                'SamplingFeatureName': row.get('Sampling Feature Name'),
+                'SamplingFeatureDescription': row.get('Sampling Feature Description'),
+                'SamplingFeatureTypeCV': 'Specimen',
+                'SpecimenMediumCV': row.get('Specimen Medium'),
+                'IsFieldSpecimen': row.get('Is Field Specimen?'),
+                'ElevationDatumCV': 'Unknown',
+                'SpecimenTypeCV': row.get('Specimen Type')
+            }
 
-        # self._session.flush()  # Need to set the RelatedFeature.RelatedFeatureID before flush will work
-        self._flush()
+            sampling_feature = self.get_or_create(Specimens, params, filter_by=['SamplingFeatureCode'], commit=False)
 
-    def parse_methods(self):
-        CONST_METHODS = "Methods"
-        sheet, tables = self.get_sheet_and_table(CONST_METHODS)
+            # Create the RelatedFeatures object.
+            _ = self.create(RelatedFeatures, commit=False, **{
+                'RelationshipTypeCV': 'Was Collected at',
+                'SamplingFeatureObj': sampling_feature,
+                'RelatedFeatureObj': collection_site
+            })
 
-        with self.session.no_autoflush:
+            # Create the Actions object
+            action = self.create(Actions, commit=False, **{
+                'ActionTypeCV': 'Specimen collection',
+                'BeginDateTime': row.get('Collection Date Time'),
+                'BeginDateTimeUTCOffset': row.get('UTC Offset'),
+                'MethodObj': method
+            })
 
-            if not len(tables):
-                print "No methods found"
-                return []
+            # And finally, create the FeatureActions object
+            _ = self.create(FeatureActions, commit=False, **{
+                'ActionObj': action,
+                'SamplingFeatureObj': sampling_feature
+            })
 
-            for table in tables:
-                rows = sheet[self.get_range_address(table)]
+            self.update_gauge()
 
-                for row in rows:
-                    method = Methods()
-                    method.MethodTypeCV = row[0].value
-                    method.MethodCode = row[1].value
-                    method.MethodName = row[2].value
-                    method.MethodDescription = row[3].value
-                    method.MethodLink = row[4].value
+        self.session.commit()
 
-                    # If organization does not exist then it returns None
-                    org = self._session.query(Organizations).filter_by(OrganizationName=row[5].value).first()
-                    method.OrganizationObj = org
+    def parse_methods(self, table=None):
+        """
+        Parse Methods recorded in the excel template
 
-                    if method.MethodCode:  # Cannot store empty/None objects
-                        self._session.add(method)
+        NOTE: When parsing SpecimenTimeSeries templates, there are two
+        seperate tables - the SpecimenCollectionMethods table, and the
+        SpecimenAnalysisMethods table. `parse_methods()` parses both tables.
+        :return: None
+        """
 
-                    self.__updateGauge()
+        collections_method_table = self.tables.get('SpecimenCollectionMethods')
+        analysis_methods_table = self.tables.get('SpecimenAnalysisMethods')
+        table = collections_method_table.append(analysis_methods_table)  # type: DataFrame
 
-        self._flush()
-
-    def parse_variables(self):
-
-        CONST_VARIABLES = "Variables"
-
-        if CONST_VARIABLES not in self.tables:
-            print "No Variables found"
-            return []
-
-        sheet = self.workbook.get_sheet_by_name(CONST_VARIABLES)
-        tables = self.tables[CONST_VARIABLES]
-
-        with self.session.no_autoflush:
-
-            for table in tables:
-                cells = sheet[self.get_range_address(table)]
-                for row in cells:
-                    var = Variables()
-                    var.VariableTypeCV = row[0].value
-                    var.VariableCode = row[1].value
-                    var.VariableNameCV = row[2].value
-                    var.VariableDefinition = row[3].value
-                    var.SpeciationCV = row[4].value
-
-                    if row[5].value is not None:
-                        if row[5].value == 'NULL':
-                            #TODO break somehow because not all required data is not filled out
-                            print "All Variables must contain a valid No Data Value!"
-                            var.NoDataValue = None
-                        else:
-                            var.NoDataValue = row[5].value
-
-                    if var.NoDataValue is not None:  # NoDataValue cannot be None
-                        self._session.add(var)
-
-                    self.__updateGauge()
-
-        self._flush()
-
-
-
+        super(ExcelSpecimen, self).parse_methods(table=table)
