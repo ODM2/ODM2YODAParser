@@ -360,7 +360,6 @@ class ExcelTimeseries(ExcelParser):
 
         top_frame = wx.GetApp().GetTopWindow()
 
-        procs = []
         workers = []
 
         # Iterate over the _columns_ of datavalues, where `series` is
@@ -409,31 +408,20 @@ class ExcelTimeseries(ExcelParser):
                 tsrvs.append(create_tsrv(args))
 
             """Single threaded - fastest with small files, VERY slow with large files"""
-            # top_frame.Title = 'YODA Tools - singlethreaded'
-            # self.__commit_tsrvs(self.session, tsrvs)
+            top_frame.Title = 'YODA Tools - singlethreaded'
+            self.__commit_tsrvs(self.session, tsrvs)
 
             """Mulithreaded - fairly fast regardless of file size"""
-            top_frame.Title = 'YODA Tools - multithreaded'
-            # create some worker threads
-            tsrvs_split = np.array_split(tsrvs, 8)
-            for tsrvs_ in tsrvs_split:
-                worker = SessionWorker(self.__session_factory.Session, target=self.__commit_tsrvs, args=tsrvs_.tolist())
-                worker.daemon = True
-                worker.start()
-                workers.append(worker)
+            # top_frame.Title = 'YODA Tools - multithreaded'
+            # # create some worker threads
+            # tsrvs_split = np.array_split(tsrvs, 8)
+            # for tsrvs_ in tsrvs_split:
+            #     worker = SessionWorker(self.__session_factory.Session, target=self.__commit_tsrvs, args=tsrvs_.tolist())
+            #     worker.daemon = True
+            #     worker.start()
+            #     workers.append(worker)
 
-            """Multiprocessing - fastest with large files, VERY slow with small files... more prone to crashing..."""
-            # top_frame.Title = 'YODA Tools - multiprocessing 1'
-            #
-            # for tsrvs_ in np.array_split(tsrvs, 4):
-            #     proc = Process(target=commit_tsrvs, args=(self.conn, tsrvs_.tolist()))
-            #     proc.start()
-            #     procs.append(proc)
-
-        # wait for processes/threads to finish executing
-        for p in procs:
-            p.join()
-
+        # wait for threads to finish executing
         for w in workers:
             w.join()
 
