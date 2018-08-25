@@ -3,7 +3,8 @@ from collections import defaultdict
 from uuid import uuid4
 import threading
 from threading import Thread
-from multiprocessing import Process
+import multiprocessing
+from multiprocessing import dummy as d_multiprocessing
 import functools
 
 import wx
@@ -18,6 +19,8 @@ from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.cell.cell import Cell
 
 from .excelParser import ExcelParser
+from .sessionWorker import SessionWorker
+from .excelParserProcess import start_procs
 
 from odm2api.models import \
     (DataSets,
@@ -47,35 +50,7 @@ from odm2api.models import \
 from odm2api.ODMconnection import dbconnection
 
 print_lock = threading.Lock()
-
-
-def update_output_text(message):
-    message += '\n'
-    pub.sendMessage('controller.update_output_text', message=message)
-
-
-def commit_tsrvs(conn, tsrvs):
-
-    session_factory = dbconnection.createConnectionFromString(conn)
-    engine = session_factory.engine
-    setSchema(engine)
-    Base.metadata.create_all(engine)
-
-    session = session_factory.getSession()
-
-    session.add_all(tsrvs)
-    try:
-        session.commit()
-    except (IntegrityError, ProgrammingError):
-        session.rollback()
-        for i in xrange(0, len(tsrvs)):
-            tsrv = tsrvs[i]
-            session.add(tsrv)
-            try:
-                session.commit()
-            except (IntegrityError, ProgrammingError) as e:
-                session.rollback()
-                update_output_text('Error: %s' % e.message)
+dummy_lock = d_multiprocessing.Lock()
 
 
 class ExcelTimeseries(ExcelParser):
@@ -360,7 +335,9 @@ class ExcelTimeseries(ExcelParser):
 
         top_frame = wx.GetApp().GetTopWindow()
 
-        workers = []
+        # workers = []
+
+        queue = start_procs(self.conn, processes=4, threads=4)
 
         # Iterate over the _columns_ of datavalues, where `series` is
         # a Series object containing datavalues corresponding to a
@@ -408,22 +385,26 @@ class ExcelTimeseries(ExcelParser):
                 tsrvs.append(create_tsrv(args))
 
             """Single threaded - fastest with small files, VERY slow with large files"""
-            top_frame.Title = 'YODA Tools - singlethreaded'
-            self.__commit_tsrvs(self.session, tsrvs)
+            # top_frame.Title = 'YODA Tools - singlethreaded'
+            # self.__commit_tsrvs(self.session, tsrvs)
 
             """Mulithreaded - fairly fast regardless of file size"""
             # top_frame.Title = 'YODA Tools - multithreaded'
             # # create some worker threads
             # tsrvs_split = np.array_split(tsrvs, 8)
             # for tsrvs_ in tsrvs_split:
-            #     worker = SessionWorker(self.__session_factory.Session, target=self.__commit_tsrvs, args=tsrvs_.tolist())
+            #     worker = SessionWorker(self.__session_factory.Session, print_lock, dummy_lock, target=self.__commit_tsrvs, args=tsrvs_.tolist())
             #     worker.daemon = True
             #     worker.start()
             #     workers.append(worker)
 
-        # wait for threads to finish executing
-        for w in workers:
-            w.join()
+            """Multiprocessing - who knows what this does!"""
+            top_frame.Title = 'YODA Tools - multiprocessing'
+            queue.put(tsrvs)
+
+        # # wait for threads to finish executing
+        # for w in workers:
+        #     w.join()
 
 
     def create_tsrv(self, data, tsr, censor_code, quality_code, timeagg_interval, aggregation_unit):
@@ -455,22 +436,3 @@ class ExcelTimeseries(ExcelParser):
                     session.rollback()
                     with print_lock:
                         self.update_output_text('Error: %s' % e.message)
-
-
-class SessionWorker(Thread):
-
-    def __init__(self, session, *args, **kwargs):
-        Thread.__init__(self, *args, **kwargs)
-        self.Session = session
-
-    def run(self):
-        try:
-            target = getattr(self, '_Thread__target', None)
-            tsrvs = getattr(self, '_Thread__args', None)
-            if all([target, tsrvs]):
-                    target(self.Session(), tsrvs)
-        except Exception as e:
-            with print_lock:
-                print(e)
-        finally:
-            self.Session.remove()
