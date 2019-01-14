@@ -16,7 +16,7 @@ from pubsub import pub
 from odm2api.models import Base, TimeSeriesResultValues, TimeSeriesResults, Units, setSchema
 from odm2api.ODMconnection import dbconnection
 
-from .sessionWorker import SessionWorker
+from yodatools.excelparser.sessionWorker import SessionWorker
 
 mute_x = multiprocessing.Lock()
 print_lock = threading.Lock()

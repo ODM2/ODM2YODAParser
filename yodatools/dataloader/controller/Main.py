@@ -7,7 +7,7 @@ import pymysql  # Import pymysql when building the application so pyinstaller ca
 import pyodbc
 import psycopg2
 
-sys.path.append('C:\Users\craig\Environments\yoda-tools\Lib\site-packages\pymysql')
+sys.path.append('C:\\Users\\craig\\Environments\\yoda-tools\\Lib\\site-packages\\pymysql')
 
 
 def main():

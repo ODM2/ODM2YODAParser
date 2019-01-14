@@ -64,18 +64,14 @@ class ExcelSpecimen(ExcelParser):
 
     def parse_datasets(self):
 
-        CONST_DATASET = 'Dataset Citation'
-
-        sheet, tables = self.get_sheet_and_table(CONST_DATASET)
-
         dataset = DataSets()
-        dataset.DataSetUUID = self.get_range_value("DatasetUUID", sheet)
-        dataset.DataSetTypeCV = self.get_range_value("DatasetType", sheet)
-        dataset.DataSetCode = self.get_range_value("DatasetCode", sheet)
-        dataset.DataSetTitle = self.get_range_value("DatasetTitle", sheet)
-        dataset.DataSetAbstract = self.get_range_value("DatasetType", sheet)
-        self._session.add(dataset)
-        self._session.flush()
+        dataset.DataSetUUID = self.get_named_range_cell_value("DatasetUUID")
+        dataset.DataSetTypeCV = self.get_named_range_cell_value("DatasetType")
+        dataset.DataSetCode = self.get_named_range_cell_value("DatasetCode")
+        dataset.DataSetTitle = self.get_named_range_cell_value("DatasetTitle")
+        dataset.DataSetAbstract = self.get_named_range_cell_value("DatasetType")
+        self.session.add(dataset)
+        self.session.flush()
         self.data_set = dataset
 
 
@@ -93,7 +89,7 @@ class ExcelSpecimen(ExcelParser):
         # Force values in 'Specimen Code' column to be strings
         table['Specimen Code'] = table['Specimen Code'].astype(str)
 
-        row_count, _ = table.shape
+        row_count = table.shape[0]
 
         for index, row in table.iterrows():
 
@@ -162,21 +158,21 @@ class ExcelSpecimen(ExcelParser):
             })
 
             # Get the collection Actions object and create RelatedActions object
-            specimen_code = row.get('Specimen Code')
-            if specimen_code not in collection_actions:
-                collection_actions[specimen_code] = self.session.query(FeatureActions) \
-                    .filter(FeatureActions.FeatureActionID == SamplingFeatures.SamplingFeatureID) \
+            sf_id = sampling_features.get(sampling_feature_code).SamplingFeatureID
+            if sf_id not in collection_actions:
+                collection_actions[sf_id] = self.session.query(FeatureActions) \
+                    .filter(FeatureActions.SamplingFeatureID == SamplingFeatures.SamplingFeatureID) \
                     .filter(SamplingFeatures.SamplingFeatureCode == row.get('Specimen Code')) \
                     .first()
 
-            if collection_actions[specimen_code] is None:
-                self.update_output_text("Skipped 'AnalysisResults':'AnalysisResults' row %d - FeatureAction with Sampling Feature Code '%s' not found" % (index + 1, specimen_code))
+            if collection_actions[sf_id] is None:
+                self.update_output_text("Skipped 'AnalysisResults':'AnalysisResults' row %d - FeatureAction with Sampling Feature ID '%d' not found" % (index + 1, sf_id))
                 continue
 
             _ = self.create(RelatedActions, commit=False, **{
                 'ActionObj': action,
                 'RelationshipTypeCV': 'Is child of',
-                'RelatedActionObj': collection_actions[specimen_code].ActionObj,
+                'RelatedActionObj': collection_actions[sf_id].ActionObj,
             })
 
             # Get the Variables, Units, and ProcessingLevels objects, which are
@@ -205,14 +201,14 @@ class ExcelSpecimen(ExcelParser):
                 'StatusCV': 'Complete',
                 'SampledMediumCV': row.get('Sampled Medium CV'),
                 'ValueCount': 1,
-                'ResultDateTime': collection_actions[specimen_code].ActionObj.BeginDateTime,
+                'ResultDateTime': collection_actions[sf_id].ActionObj.BeginDateTime,
             })
 
             # Create MeasurementResultValues object
             _ = self.create(MeasurementResultValues, commit=False, **{
                 'DataValue': row.get('Data Value'),
-                'ValueDateTime': collection_actions[specimen_code].ActionObj.BeginDateTime,
-                'ValueDateTimeUTCOffset': collection_actions[specimen_code].ActionObj.BeginDateTimeUTCOffset,
+                'ValueDateTime': collection_actions[sf_id].ActionObj.BeginDateTime,
+                'ValueDateTimeUTCOffset': collection_actions[sf_id].ActionObj.BeginDateTimeUTCOffset,
                 'ResultObj': result
             })
 
@@ -249,7 +245,7 @@ class ExcelSpecimen(ExcelParser):
                 'SpatialReferenceObj': spatial_ref
             }
 
-            assert (all(params.values()))
+            # assert (all(params.values()))
 
             params.update({
                 'SamplingFeatureName': row.get('Sampling Feature Name'),

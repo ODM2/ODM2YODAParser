@@ -6,6 +6,7 @@ from threading import Thread
 import multiprocessing
 from multiprocessing import dummy as d_multiprocessing
 import functools
+from datetime import datetime
 
 import wx
 from pubsub import pub
@@ -18,9 +19,9 @@ from sqlalchemy.orm import Session
 from openpyxl.worksheet.worksheet import Worksheet
 from openpyxl.cell.cell import Cell
 
-from .excelParser import ExcelParser
-from .sessionWorker import SessionWorker
-from .excelParserProcess import start_procs
+from yodatools.excelparser.excelParser import ExcelParser
+from yodatools.excelparser.sessionWorker import SessionWorker
+from yodatools.excelparser.excelParserProcess import start_procs
 
 from odm2api.models import \
     (DataSets,
@@ -106,68 +107,6 @@ class ExcelTimeseries(ExcelParser):
             if not any(values):
                 return
             yield values
-
-    def get_table_name_ranges(self):
-        """
-        Returns a list of the name range that have a table.
-        The name range should contain the cells locations of the data.
-        :rtype: list
-        """
-        CONST_NAME = "_Table"
-        table_name_range = {}
-        for name_range in self.name_ranges:
-            if CONST_NAME in name_range.name:
-                sheet = name_range.attr_text.split('!')[0]
-                sheet = sheet.replace('\'', '')
-
-                if sheet in table_name_range:
-                    table_name_range[sheet].append(name_range)
-                else:
-                    table_name_range[sheet] = [name_range]
-
-        return table_name_range
-
-    def get_range_address(self, named_range):
-        """
-        Depracated
-
-        :param named_range:
-        :return:
-        """
-        if named_range is not None:
-            return named_range.attr_text.split('!')[1].replace('$', '')
-        return None
-
-    def get_range_value(self, range_name, sheet):
-
-        """
-        Depracated
-
-        :param range_name:
-        :param sheet:
-        :return:
-        """
-        value = None
-        named_range = self.workbook.get_named_range(range_name)
-        range_ = self.get_range_address(named_range)
-        if range_:
-            value = sheet[range_].value
-        return value
-
-    def get_sheet_and_table(self, sheet_name):
-        """
-        Depracated
-
-        :param sheet_name:
-        :return:
-        """
-        if sheet_name not in self.tables:
-            return [], []
-        sheet = self.workbook.get_sheet_by_name(sheet_name)
-        tables = self.tables[sheet_name]
-
-        return sheet, tables
-
 
     def parse(self):
         """
@@ -337,7 +276,7 @@ class ExcelTimeseries(ExcelParser):
 
         # workers = []
 
-        queue = start_procs(self.conn, processes=4, threads=4)
+        # queue = start_procs(self.conn, processes=4, threads=4)
 
         # Iterate over the _columns_ of datavalues, where `series` is
         # a Series object containing datavalues corresponding to a
@@ -385,8 +324,8 @@ class ExcelTimeseries(ExcelParser):
                 tsrvs.append(create_tsrv(args))
 
             """Single threaded - fastest with small files, VERY slow with large files"""
-            # top_frame.Title = 'YODA Tools - singlethreaded'
-            # self.__commit_tsrvs(self.session, tsrvs)
+            top_frame.Title = 'YODA Tools - singlethreaded'
+            self.__commit_tsrvs(self.session, tsrvs)
 
             """Mulithreaded - fairly fast regardless of file size"""
             # top_frame.Title = 'YODA Tools - multithreaded'
@@ -399,8 +338,8 @@ class ExcelTimeseries(ExcelParser):
             #     workers.append(worker)
 
             """Multiprocessing - who knows what this does!"""
-            top_frame.Title = 'YODA Tools - multiprocessing'
-            queue.put(tsrvs)
+            # top_frame.Title = 'YODA Tools - multiprocessing'
+            # queue.put(tsrvs)
 
         # # wait for threads to finish executing
         # for w in workers:
@@ -409,6 +348,12 @@ class ExcelTimeseries(ExcelParser):
 
     def create_tsrv(self, data, tsr, censor_code, quality_code, timeagg_interval, aggregation_unit):
         localdt, utcoffset, datavalue = data
+
+        # NOTE: SQLite only accepts timestamps that are native datetime python objects.
+        # Casting `localdt` from the default type (`TimeStamp`, which comes from sqlalchemy?)
+        # to `datetime` doesn't seem to effect MSSQL connections... this is yet to be
+        # determined with PostgreSQL and MySQL... :P
+        localdt = datetime.strptime(str(localdt), '%Y-%m-%d %H:%M:%S')
 
         return TimeSeriesResultValues(
             ResultID=tsr.ResultID,

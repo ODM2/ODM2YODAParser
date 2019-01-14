@@ -1,6 +1,12 @@
 from threading import Thread
 from sqlalchemy.orm import scoped_session
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import threading
+    import multiprocessing
+
 
 class SessionWorker(Thread):
     """

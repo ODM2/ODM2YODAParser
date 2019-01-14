@@ -3,6 +3,7 @@ import re
 from collections import defaultdict
 from uuid import uuid4
 import wx
+from datetime import datetime
 
 from pubsub import pub
 from pandas import isnull, DataFrame
@@ -44,6 +45,7 @@ class ExcelParser(object):
 
     TABLE_NAMES = [
         'Analysis_Results',
+        'DatasetCitation'
         'Organizations',
         'People'
         'ProcessingLevels',
@@ -250,7 +252,19 @@ class ExcelParser(object):
             String representation of the named range coordinate (e.g. '$A$1')
         :return: Value(s) contained in the named range given by `coord`
         """
-        return self.get_named_range(sheet, coord).value
+
+        value = self.get_named_range(sheet, coord)
+
+        if isinstance(value, tuple):
+            results = []
+            for v in value:
+                results.append(v[0].value)
+            # value = [v.value for v in value]
+            return results
+        elif hasattr(value, 'value'):
+            return value.value
+
+        return value
 
     def get_named_range_cell_value(self, named_range):
         """
@@ -397,6 +411,13 @@ class ExcelParser(object):
                 'OrganizationObj': self.orgs.get(row.get('Organization Name')),
                 'PersonObj': person
             }
+
+            start_date = aff_params['AffiliationStartDate']
+            aff_params['AffiliationStartDate'] = datetime(year=start_date.year, month=start_date.month,
+                                                          day=start_date.day, hour=start_date.hour,
+                                                          minute=start_date.minute, second=start_date.second)
+
+            del aff_params['AffiliationEndDate']
 
             aff = self.get_or_create(Affiliations, aff_params, filter_by='PersonID')
             self.affiliations[row.get('Full Name')] = aff
@@ -546,9 +567,12 @@ class ExcelParser(object):
 
         self.update_progress_label('Reading ProcessingLevels table')
 
+        processing_codes = self.get_named_range_cell_value('ProcessingLevelCodes')
+        processing_codes = [code for code in processing_codes if code is not None]
         table = self.tables.get('ProcessingLevels', DataFrame())
 
-        table['Processing Level Code'] = table['Processing Level Code'].astype(int).astype(str)
+        table['ProcessingLevelCodes'] = table['Processing Level Code'].astype(int).astype(str)
+
 
         for _, row in table.iterrows():
 
@@ -558,9 +582,70 @@ class ExcelParser(object):
                 'Explanation': row.get('Explanation')
             }
 
-            assert(params.get('ProcessingLevelCode', False))
+            # assert(params.get('ProcessingLevelCode', False))
 
             plvl = self.get_or_create(ProcessingLevels, params, filter_by=['ProcessingLevelCode'])
             self.processing_levels[params.get('ProcessingLevelCode')] = plvl
 
             self.update_gauge()
+
+    def get_table_name_ranges(self):
+        """
+        Returns a list of the name range that have a table.
+        The name range should contain the cells locations of the data.
+        :rtype: list
+        """
+        CONST_NAME = "_Table"
+        table_name_range = {}
+        for name_range in self.name_ranges:
+            if CONST_NAME in name_range.name:
+                sheet = name_range.attr_text.split('!')[0]
+                sheet = sheet.replace('\'', '')
+
+                if sheet in table_name_range:
+                    table_name_range[sheet].append(name_range)
+                else:
+                    table_name_range[sheet] = [name_range]
+
+        return table_name_range
+
+    def get_range_address(self, named_range):
+        """
+        Depracated
+
+        :param named_range:
+        :return:
+        """
+        if named_range is not None:
+            return named_range.attr_text.split('!')[1].replace('$', '')
+        return None
+
+    def get_range_value(self, range_name, sheet):
+
+        """
+        Depracated
+
+        :param range_name:
+        :param sheet:
+        :return:
+        """
+        value = None
+        named_range = self.workbook.get_named_range(range_name)
+        range_ = self.get_range_address(named_range)
+        if range_:
+            value = sheet[range_].value
+        return value
+
+    def get_sheet_and_table(self, sheet_name):
+        """
+        Depracated
+
+        :param sheet_name:
+        :return:
+        """
+        if sheet_name not in self.tables:
+            return [], []
+        sheet = self.workbook.get_sheet_by_name(sheet_name)
+        tables = self.tables[sheet_name]
+
+        return sheet, tables
