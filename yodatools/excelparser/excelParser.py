@@ -6,7 +6,7 @@ import wx
 from datetime import datetime
 
 from pubsub import pub
-from pandas import isnull, DataFrame
+from pandas import isnull, DataFrame, NaT
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.orm.session import Session
@@ -14,6 +14,7 @@ import openpyxl
 from openpyxl.worksheet.table import Table
 from openpyxl.workbook.workbook import Workbook
 from openpyxl.cell.cell import Cell
+from yodatools.excelparser.ParserException import ParserException
 
 from odm2api.models import \
     (Base,
@@ -399,6 +400,9 @@ class ExcelParser(object):
                 'PersonMiddleName': row.get('Middle Name')
             }
 
+            if NaT in person_params.values():
+                continue
+
             person = self.get_or_create(People, person_params)
 
             aff_params = {
@@ -567,9 +571,13 @@ class ExcelParser(object):
 
         self.update_progress_label('Reading ProcessingLevels table')
 
-        processing_codes = self.get_named_range_cell_value('ProcessingLevelCodes')
-        processing_codes = [code for code in processing_codes if code is not None]
+        # processing_codes = self.get_named_range_cell_value('ProcessingLevelCodes')
+        # processing_codes = [code for code in processing_codes if code is not None]
         table = self.tables.get('ProcessingLevels', DataFrame())
+
+        if 'Processing Level Code' not in table.keys():
+            raise ParserException('Processing Level Codes not found. (Processing Level Information probably not formatted as a table in excel)')
+
 
         table['ProcessingLevelCodes'] = table['Processing Level Code'].astype(int).astype(str)
 
@@ -577,7 +585,7 @@ class ExcelParser(object):
         for _, row in table.iterrows():
 
             params = {
-                'ProcessingLevelCode': row.get('Processing Level Code'),
+                'ProcessingLevelCode': str(int(row.get('Processing Level Code'))),
                 'Definition': row.get('Definition'),
                 'Explanation': row.get('Explanation')
             }
@@ -588,6 +596,8 @@ class ExcelParser(object):
             self.processing_levels[params.get('ProcessingLevelCode')] = plvl
 
             self.update_gauge()
+
+        self.session.commit()
 
     def get_table_name_ranges(self):
         """

@@ -50,6 +50,7 @@ class ExcelSpecimen(ExcelParser):
         self.parse_spatial_reference()
         self.parse_sites()
         self.parse_specimens()
+        # with self.session.no_autoflush:
         self.parse_analysis_results()
 
 
@@ -64,15 +65,23 @@ class ExcelSpecimen(ExcelParser):
 
     def parse_datasets(self):
 
-        dataset = DataSets()
-        dataset.DataSetUUID = self.get_named_range_cell_value("DatasetUUID")
-        dataset.DataSetTypeCV = self.get_named_range_cell_value("DatasetType")
-        dataset.DataSetCode = self.get_named_range_cell_value("DatasetCode")
-        dataset.DataSetTitle = self.get_named_range_cell_value("DatasetTitle")
-        dataset.DataSetAbstract = self.get_named_range_cell_value("DatasetType")
-        self.session.add(dataset)
+        # dataset = DataSets()
+        # dataset.DataSetUUID = self.get_named_range_cell_value("DatasetUUID")
+        # dataset.DataSetTypeCV = self.get_named_range_cell_value("DatasetType")
+        # dataset.DataSetCode = self.get_named_range_cell_value("DatasetCode")
+        # dataset.DataSetTitle = self.get_named_range_cell_value("DatasetTitle")
+        # dataset.DataSetAbstract = self.get_named_range_cell_value("DatasetType")
+        dataset_params = {
+            "DataSetUUID": self.get_named_range_cell_value("DatasetUUID"),
+            "DataSetTypeCV": self.get_named_range_cell_value("DatasetType"),
+            "DataSetCode": self.get_named_range_cell_value("DatasetCode"),
+            "DataSetTitle": self.get_named_range_cell_value("DatasetTitle"),
+            "DataSetAbstract": self.get_named_range_cell_value("DatasetType"),
+        }
+
+        self.data_set = self.get_or_create(DataSets, dataset_params)
+
         self.session.flush()
-        self.data_set = dataset
 
 
     def parse_analysis_results(self):
@@ -124,6 +133,13 @@ class ExcelSpecimen(ExcelParser):
                     ))
 
                     continue
+                except Exception as e:
+                    if hasattr(e, 'message'):
+                        e = e.message
+                    self.update_output_text(e.message)
+                    continue
+
+
 
             # Create the Actions object
             action = self.create(Actions, commit=False, **{
@@ -141,14 +157,6 @@ class ExcelSpecimen(ExcelParser):
 
             # Get the Affiliations object for ActionBy
             analyst_name = row.get('Analyst Name', '')
-            # if analyst_name not in affiliations:
-            #     names = self.parse_name(analyst_name)
-            #     affiliations[analyst_name] = self.session.query(Affiliations) \
-            #         .join(People) \
-            #         .filter(People.PersonLastName == names.get('last', '')) \
-            #         .filter(People.PersonFirstName == names.get('first', '')) \
-            #         .filter(People.PersonMiddleName == names.get('middle', '')) \
-            #         .first()
 
             # Create the ActionBy object
             _ = self.create(ActionBy, commit=False, **{
@@ -183,7 +191,8 @@ class ExcelSpecimen(ExcelParser):
             time_aggregation_unit = self.get(Units, UnitsName=row.get('Time Aggregation Unit', ''))
 
             if not all([variable, unit, processing_lvl, time_aggregation_unit]):
-                self.update_output_text('Skipped row {} in DataColumns table in Anaylsis_Results worksheet because it contains missing or invalid data.'.format(index + 1))
+                self.update_output_text('Skipped row {} in table "DataColumns" in worksheet "Anaylsis_Results" because it contains missing or invalid data.'.format(index + 1))
+                continue
 
             # Create the MeasurementResults object
             result = self.create(MeasurementResults, commit=False, **{
@@ -320,7 +329,21 @@ class ExcelSpecimen(ExcelParser):
                 'SpecimenTypeCV': row.get('Specimen Type')
             }
 
-            sampling_feature = self.get_or_create(Specimens, params, filter_by=['SamplingFeatureCode'], commit=False)
+            try:
+                sampling_feature = self.get_or_create(Specimens, params, filter_by=['SamplingFeatureCode'], commit=False)
+            except IntegrityError as e:
+                self.session.rollback()
+
+                if re.match(r".*UNIQUE constraint failed.*SamplingFeatures\.SamplingFeatureCode", str(e)):
+                    self.update_output_text("Error: UNIQUE constraint failed: SamplingFeature '{name}' already exists in the "
+                                            "database. Could not resolve SamplingFeatures with the one you're trying to "
+                                            "insert with the one that's already in the database, because they have "
+                                            "conflicting UUIDs. If the two SamplingFeatures are the same object, they "
+                                            "must have matching UUIDs.\n".format(name=params.get('SamplingFeatureCode')))
+                else:
+                    self.update_output_text(e.message if hasattr(e, 'message') else str(e))
+
+                continue
 
             # Create the RelatedFeatures object.
             _ = self.create(RelatedFeatures, commit=False, **{
