@@ -1,4 +1,5 @@
 import wx
+import os
 
 
 class WizardHomePageView(wx.Panel):
@@ -17,6 +18,9 @@ class WizardHomePageView(wx.Panel):
 
         # Style components
         self.input_file_text_ctrl.SetHint('Input file...')
+
+        # Set file path if specified by environment variables
+        self.input_file_text_ctrl.WriteText(os.getenv("EXCEL_TEMPLATE_FILE_PATH", ""))
 
         # Sizer
         sizer = wx.BoxSizer(wx.VERTICAL)

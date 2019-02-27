@@ -2,20 +2,19 @@ language: python
 
 sudo: false
 
-matrix:
-  fast_finish: true
-  include:
-  - python: 2.7
-    env: TEST_TARGET=default
-  - python: 3.6
-    env: TEST_TARGET=default
-  - python: 2.7
-    env: TEST_TARGET=coding_standards
-  allow_failures:
-  - python: 3.6
-    env: TEST_TARGET=default
-  - python: 2.7
-    env: TEST_TARGET=coding_standards
+install: # now just our code
+  # conda
+  - |
+      deps="`grep -v \# requirements/miniconda.conda`"
+      conda create -q -n test-environment python=$TRAVIS_PYTHON_VERSION $deps
+  - source activate test-environment
+  - pip install -r requirements/development.pip
+  # ODM2
+#  - pip install odm2api
+  - pip install --process-dependency-links git+https://github.com/ODM2/ODM2PythonAPI.git
+#  - pip install  -r requirements_tests.txt  --allow-external pyodbc --allow-unverified pyodbc
+  - pip install pysqlite
+  - pip list
 
 
 before_install:
@@ -45,7 +44,3 @@ script:
       flake8 --max-line-length=105 yodatools ;
       flake8 --max-line-length=105 tests ;
     fi
-
-# FIXME: commented out from the previous CI config.
-#  - py.test yodatool/tests
-#  - py.test dataloader/tests

@@ -9,23 +9,17 @@ from yodatools.excelparser.excelTimeseries import ExcelTimeseries
 
 class ExcelInput(iInputs):
     def __init__(self, **kwargs):
-        super(ExcelInput, self).__init__()
+        super(ExcelInput, self).__init__(**kwargs)
+
+        self.output_file = kwargs.get('output_file', 'export.csv')
+        self.gauge = kwargs.get('gauge', None)
 
 
-        self.output_file = "export.csv"
-        self.gauge = None
+    @property
+    def session(self):
+        return self._session
 
-
-        if 'output_file' in kwargs:
-            self.output_file = kwargs['output_file']
-
-        if 'gauge' in kwargs:
-            self.gauge = kwargs['gauge']
-
-
-
-#     def parse(self, file_path=None):
-    def parse(self, file_path, **kwargs):
+    def parse(self, file_path):
         """
         If any of the methods return early, then check that they have the table ranges
         The table range should exist in the tables from get_table_name_range()
@@ -37,31 +31,31 @@ class ExcelInput(iInputs):
             print "Something is wrong with the file but what?"
             return False
 
-        type = self.get_type(self.file_path)
+        type_ = self.get_type(self.file_path)
 
         start = time.time()
 
-        if type == "TimeSeries":
+        if type_ == "TimeSeries":
             # raise Exception("TimeSeries Parsing is not currently supported")
-            et = ExcelTimeseries(self.file_path, gauge=self.gauge)
-            et.parse(self._session_factory)
+            et = ExcelTimeseries(self.file_path, self._session_factory, conn=self.conn)
+            et.parse()
         else:
-            es = ExcelSpecimen(self.file_path, gauge=self.gauge)
-            es.parse(self._session_factory)
+            es = ExcelSpecimen(self.file_path, self._session_factory)
+            es.parse()
 
 
         # self._session.commit()
 
         end = time.time()
-        # print(end - start)
+        print(end - start)
 
         return True
 
     def get_type(self, file_path):
 
         self.workbook = openpyxl.load_workbook(file_path, read_only=True)
-        # self.name_ranges = self.workbook.get_named_ranges()
-        # self.sheets = self.workbook.get_sheet_names()
+        self.name_ranges = self.workbook.get_named_ranges()
+        self.sheets = self.workbook.get_sheet_names()
 
         named_range = "TemplateProfile"
         range = self.workbook.get_named_range(named_range)
@@ -83,4 +77,5 @@ class ExcelInput(iInputs):
         return True
 
     def sendODM2Session(self):  # this should be renamed to get not send because it returns a value
-        return self._session
+        # TODO: Remove method
+        return self.session
